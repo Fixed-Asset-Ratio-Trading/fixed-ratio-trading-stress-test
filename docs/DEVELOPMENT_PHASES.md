@@ -923,3 +923,457 @@ public async Task<string> SubmitSwapTransactionAsync(
 5. **Begin Solana integration** (Phase 2)
 
 This phased approach ensures we build a solid foundation and can test each component thoroughly before adding complexity.
+
+---
+
+## 🎯 Phase 3.5: Enhanced Contract Integration with Production-Ready Features
+
+### Overview
+Based on the enhanced API documentation with production-tested values and detailed implementation requirements, this phase upgrades the Phase 3 implementation to match production standards.
+
+### 3.5.1 Compute Unit Management Enhancement
+
+#### **Dynamic CU Allocation System**
+```csharp
+public class ComputeUnitManager
+{
+    // Production-tested CU requirements from dashboard
+    private readonly Dictionary<string, uint> _computeUnits = new()
+    {
+        ["process_liquidity_deposit"] = 310_000,  // Min observed: 249K
+        ["process_liquidity_withdraw"] = 290_000, // Min observed: 227K
+        ["process_swap_execute"] = 250_000,       // Min observed: 202K
+        ["process_pool_initialize"] = 150_000,    // Min observed: 91K
+        ["process_consolidate_pool_fees"] = 150_000,
+        ["process_treasury_donate_sol"] = 150_000,
+        ["process_system_pause"] = 150_000,
+        ["process_system_unpause"] = 150_000
+    };
+    
+    public uint GetComputeUnits(string operation, TransactionContext context)
+    {
+        // Dynamic calculation for consolidation
+        if (operation == "process_consolidate_pool_fees")
+        {
+            return CalculateConsolidationCU(context.PoolCount);
+        }
+        
+        // Dynamic calculation for donations
+        if (operation == "process_treasury_donate_sol")
+        {
+            return CalculateDonationCU(context.DonationAmount);
+        }
+        
+        return _computeUnits.GetValueOrDefault(operation, 150_000);
+    }
+    
+    private uint CalculateConsolidationCU(int poolCount)
+    {
+        // Formula: Base_CUs = 4,000 + (pool_count × 5,000)
+        const uint BASE_CU = 4_000;
+        const uint PER_POOL_CU = 5_000;
+        return Math.Min(BASE_CU + (uint)(poolCount * PER_POOL_CU), 150_000);
+    }
+    
+    private uint CalculateDonationCU(ulong donationLamports)
+    {
+        const ulong SMALL_DONATION_THRESHOLD = 1000L * 1_000_000_000L; // 1,000 SOL
+        return donationLamports <= SMALL_DONATION_THRESHOLD ? 25_000u : 120_000u;
+    }
+}
+```
+
+### 3.5.2 Enhanced Pool Creation with Safety Mechanisms
+
+#### **Pool Configuration Normalization**
+```csharp
+public class PoolNormalizer
+{
+    public NormalizedPoolConfig NormalizePoolConfig(
+        PublicKey multipleMint,    // Abundant token (e.g., USDT)
+        PublicKey baseMint,        // Valuable token (e.g., SOL)
+        ulong originalRatioA,
+        ulong originalRatioB)
+    {
+        // Token normalization (smaller pubkey = Token A)
+        var shouldSwap = string.Compare(multipleMint.ToString(), baseMint.ToString()) > 0;
+        
+        if (shouldSwap)
+        {
+            // Swap tokens AND ratios to maintain correct exchange rate
+            return new NormalizedPoolConfig
+            {
+                TokenAMint = baseMint,
+                TokenBMint = multipleMint,
+                RatioANumerator = originalRatioB,    // Swapped!
+                RatioBDenominator = originalRatioA,  // Swapped!
+                PoolStatePda = DerivePoolStatePda(baseMint, multipleMint)
+            };
+        }
+        
+        return new NormalizedPoolConfig
+        {
+            TokenAMint = multipleMint,
+            TokenBMint = baseMint,
+            RatioANumerator = originalRatioA,
+            RatioBDenominator = originalRatioB,
+            PoolStatePda = DerivePoolStatePda(multipleMint, baseMint)
+        };
+    }
+    
+    public void ValidatePoolRatio(NormalizedPoolConfig config, int tokenADecimals, int tokenBDecimals)
+    {
+        // Verify one side equals exactly 10^decimals (anchored to 1)
+        var expectedA = (ulong)Math.Pow(10, tokenADecimals);
+        var expectedB = (ulong)Math.Pow(10, tokenBDecimals);
+        
+        if (config.RatioANumerator != expectedA && config.RatioBDenominator != expectedB)
+        {
+            throw new InvalidOperationException(
+                $"Invalid pool ratio: neither side is anchored to 1. " +
+                $"Expected A={expectedA} or B={expectedB}, " +
+                $"got A={config.RatioANumerator}, B={config.RatioBDenominator}");
+        }
+        
+        // Log the exchange rate for verification
+        var rate = (double)config.RatioBDenominator / config.RatioANumerator;
+        _logger.LogInformation("Pool ratio validated: 1 Token A = {Rate} Token B", rate);
+    }
+}
+```
+
+### 3.5.3 Enhanced Transaction Builder with Account Validation
+
+#### **Account Structure Validation**
+```csharp
+public class EnhancedTransactionBuilder : ITransactionBuilderService
+{
+    // Account structure validators for each operation
+    private readonly Dictionary<string, AccountStructureValidator> _validators = new();
+    
+    public async Task<byte[]> BuildDepositTransactionAsync(
+        Wallet wallet,
+        string poolId,
+        TokenType tokenType,
+        ulong amountInBasisPoints)
+    {
+        var pool = await _solanaClient.GetPoolStateAsync(poolId);
+        
+        // Build account structure per API documentation
+        var accounts = new List<AccountMeta>
+        {
+            // [0] User wallet (signer, writable) - pays fees & provides tokens
+            AccountMeta.Writable(wallet.PublicKey, true),
+            // [1] System Program
+            AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),
+            // [2] SPL Token Program
+            AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),
+            // [3] System State PDA
+            AccountMeta.ReadOnly(DeriveSystemStatePda(), false),
+            // [4] Pool State PDA
+            AccountMeta.ReadOnly(new PublicKey(pool.PoolId), false),
+            // [5] Deposit token mint (A or B)
+            AccountMeta.ReadOnly(new PublicKey(tokenType == TokenType.A ? pool.TokenAMint : pool.TokenBMint), false),
+            // [6] Appropriate vault PDA (writable)
+            AccountMeta.Writable(new PublicKey(tokenType == TokenType.A ? pool.VaultA : pool.VaultB), false),
+            // [7] User's token account
+            AccountMeta.Writable(await GetAssociatedTokenAccount(wallet, tokenType == TokenType.A ? pool.TokenAMint : pool.TokenBMint), false),
+            // [8] LP mint PDA (writable)
+            AccountMeta.Writable(new PublicKey(tokenType == TokenType.A ? pool.LpMintA : pool.LpMintB), false),
+            // [9] User's LP token account (writable)
+            AccountMeta.Writable(await GetAssociatedTokenAccount(wallet, tokenType == TokenType.A ? pool.LpMintA : pool.LpMintB), false),
+            // [10] Main Treasury PDA (writable)
+            AccountMeta.Writable(new PublicKey(pool.MainTreasury), false),
+            // [11] Pool Treasury PDA (writable)
+            AccountMeta.Writable(new PublicKey(pool.PoolTreasury), false)
+        };
+        
+        // Create instruction with proper discriminator and data
+        var data = new DepositInstructionData
+        {
+            Discriminator = 6, // process_liquidity_deposit
+            Amount = amountInBasisPoints
+        };
+        
+        var instruction = new TransactionInstruction
+        {
+            ProgramId = new PublicKey(_config.ProgramId),
+            Keys = accounts,
+            Data = data.Serialize()
+        };
+        
+        // Build transaction with compute budget
+        var transaction = new TransactionBuilder()
+            .SetFeePayer(wallet.PublicKey)
+            .SetRecentBlockHash(await GetRecentBlockHashAsync())
+            .AddInstruction(ComputeBudgetProgram.SetComputeUnitLimit(310_000))
+            .AddInstruction(instruction)
+            .Build(wallet.Account);
+        
+        return transaction.Serialize();
+    }
+}
+```
+
+### 3.5.4 Contract Error Handling with Recovery Strategies
+
+#### **Comprehensive Error Handler**
+```csharp
+public class ContractErrorHandler
+{
+    public async Task<bool> HandleContractError(Exception ex, ThreadContext context)
+    {
+        if (ex is RpcException rpcEx && TryParseContractError(rpcEx, out var errorCode))
+        {
+            return errorCode switch
+            {
+                ContractErrorCodes.InsufficientFunds => await HandleInsufficientFunds(context),
+                ContractErrorCodes.PoolPaused => await HandlePoolPaused(context),
+                ContractErrorCodes.SystemPaused => await HandleSystemPaused(context),
+                ContractErrorCodes.InsufficientLiquidity => await HandleInsufficientLiquidity(context),
+                ContractErrorCodes.SlippageExceeded => await HandleSlippageExceeded(context),
+                ContractErrorCodes.InvalidTokenAccount => await HandleInvalidTokenAccount(context),
+                _ => await HandleUnknownError(errorCode, context)
+            };
+        }
+        
+        return false;
+    }
+    
+    private async Task<bool> HandleInsufficientFunds(ThreadContext context)
+    {
+        _logger.LogWarning("Insufficient funds for {ThreadId}, requesting funding", context.ThreadId);
+        
+        // Check SOL balance
+        var solBalance = await _solanaClient.GetSolBalanceAsync(context.WalletAddress);
+        if (solBalance < SolanaConfiguration.MIN_SOL_BALANCE)
+        {
+            await _solanaClient.RequestAirdropAsync(context.WalletAddress, SolanaConfiguration.SOL_AIRDROP_AMOUNT);
+        }
+        
+        // For deposit threads, check token balance and request minting if needed
+        if (context.ThreadType == ThreadType.Deposit && context.AutoRefill)
+        {
+            await RequestTokenRefill(context);
+        }
+        
+        // Wait before retrying
+        await Task.Delay(5000);
+        return true; // Retry operation
+    }
+    
+    private async Task<bool> HandlePoolPaused(ThreadContext context)
+    {
+        _logger.LogInformation("Pool {PoolId} is paused, waiting for unpause", context.PoolId);
+        
+        // Check pool pause status periodically
+        while (await _solanaClient.IsPoolPausedAsync(context.PoolId))
+        {
+            await Task.Delay(30000); // Check every 30 seconds
+        }
+        
+        return true; // Retry operation
+    }
+}
+```
+
+### 3.5.5 Enhanced Thread Workers with Real Operations
+
+#### **Production-Ready Deposit Worker**
+```csharp
+public class EnhancedDepositWorker : IThreadWorker
+{
+    private readonly ITransactionBuilderService _transactionBuilder;
+    private readonly ISolanaClientService _solanaClient;
+    private readonly IContractErrorHandler _errorHandler;
+    private readonly ILogger<EnhancedDepositWorker> _logger;
+    
+    public async Task RunAsync(ThreadContext context, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                // Check balances
+                var tokenBalance = await GetTokenBalance(context);
+                
+                // Check for auto-refill threshold
+                if (context.AutoRefill && context.InitialAmount > 0)
+                {
+                    var threshold = (ulong)(context.InitialAmount * SolanaConfiguration.AUTO_REFILL_THRESHOLD);
+                    if (tokenBalance < threshold)
+                    {
+                        await RequestTokenRefill(context);
+                        tokenBalance = await GetTokenBalance(context);
+                    }
+                }
+                
+                // Calculate deposit amount (1bp to 5% of balance)
+                var maxAmount = (ulong)(tokenBalance * SolanaConfiguration.MAX_DEPOSIT_PERCENTAGE);
+                var depositAmount = (ulong)Random.Shared.NextInt64(1, (long)maxAmount + 1);
+                
+                // Execute deposit
+                var result = await _solanaClient.ExecuteDepositAsync(
+                    context.Wallet,
+                    context.PoolId,
+                    context.TokenType,
+                    depositAmount);
+                
+                // Update statistics
+                context.Statistics.SuccessfulDeposits++;
+                context.Statistics.TotalTokensDeposited += result.TokensDeposited;
+                context.Statistics.TotalLpTokensReceived += result.LpTokensReceived;
+                context.Statistics.TotalPoolFeesPaid += result.PoolFeePaid;
+                context.Statistics.TotalNetworkFeesPaid += result.NetworkFeePaid;
+                
+                // Share LP tokens if enabled
+                if (context.ShareLpTokens)
+                {
+                    await ShareLpTokensWithWithdrawalThreads(context, result.LpTokensReceived);
+                }
+                
+                // Random delay
+                var delay = Random.Shared.Next(
+                    SolanaConfiguration.MIN_OPERATION_DELAY_MS,
+                    SolanaConfiguration.MAX_OPERATION_DELAY_MS);
+                await Task.Delay(delay, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                var shouldRetry = await _errorHandler.HandleContractError(ex, context);
+                if (!shouldRetry)
+                {
+                    _logger.LogError(ex, "Unrecoverable error in deposit thread {ThreadId}", context.ThreadId);
+                    context.Status = ThreadStatus.Error;
+                    break;
+                }
+            }
+        }
+    }
+}
+```
+
+### 3.5.6 Empty Command Implementation
+
+#### **Safe Empty Operations**
+```csharp
+public class EmptyCommandHandler
+{
+    public async Task<EmptyResult> ExecuteEmptyAsync(ThreadContext context)
+    {
+        var result = new EmptyResult
+        {
+            ThreadId = context.ThreadId,
+            ThreadType = context.ThreadType,
+            OperationType = $"{context.ThreadType.ToString().ToLower()}_empty"
+        };
+        
+        try
+        {
+            switch (context.ThreadType)
+            {
+                case ThreadType.Deposit:
+                    return await ExecuteDepositEmpty(context, result);
+                case ThreadType.Withdrawal:
+                    return await ExecuteWithdrawalEmpty(context, result);
+                case ThreadType.Swap:
+                    return await ExecuteSwapEmpty(context, result);
+                default:
+                    throw new InvalidOperationException($"Unknown thread type: {context.ThreadType}");
+            }
+        }
+        catch (Exception ex)
+        {
+            result.OperationSuccessful = false;
+            result.ErrorMessage = ex.Message;
+            _logger.LogError(ex, "Empty command failed for thread {ThreadId}", context.ThreadId);
+            return result;
+        }
+    }
+    
+    private async Task<EmptyResult> ExecuteDepositEmpty(ThreadContext context, EmptyResult result)
+    {
+        // Get current token balance
+        var tokenBalance = await GetTokenBalance(context);
+        result.TokensUsed = tokenBalance;
+        
+        if (tokenBalance == 0)
+        {
+            result.ErrorMessage = "No tokens available";
+            return result;
+        }
+        
+        // Burn tokens first (guaranteed removal)
+        await BurnTokens(context, tokenBalance);
+        result.TokensBurned = tokenBalance;
+        
+        try
+        {
+            // Attempt deposit operation
+            var depositResult = await _solanaClient.ExecuteDepositAsync(
+                context.Wallet,
+                context.PoolId,
+                context.TokenType,
+                tokenBalance);
+            
+            result.LpTokensReceived = depositResult.LpTokensReceived;
+            result.OperationSuccessful = true;
+            
+            // Burn received LP tokens
+            await BurnLpTokens(context, depositResult.LpTokensReceived);
+            result.LpTokensBurned = depositResult.LpTokensReceived;
+        }
+        catch (Exception ex)
+        {
+            // Operation failed but tokens already burned
+            result.ErrorMessage = $"Deposit failed: {ex.Message}";
+        }
+        
+        return result;
+    }
+}
+```
+
+### 3.5.7 Implementation Tasks
+
+- [ ] Implement ComputeUnitManager with dynamic CU calculation
+- [ ] Create PoolNormalizer with safety validation
+- [ ] Enhance TransactionBuilder with full account structures
+- [ ] Implement ContractErrorHandler with recovery strategies
+- [ ] Update all thread workers with real blockchain operations
+- [ ] Add EmptyCommandHandler for resource cleanup
+- [ ] Create comprehensive test suite for each component
+- [ ] Add performance monitoring and metrics collection
+- [ ] Implement transaction confirmation with retry logic
+- [ ] Add detailed logging for debugging and analysis
+
+### 3.5.8 Testing Requirements
+
+#### **Unit Tests**
+- Pool normalization edge cases
+- CU calculation formulas
+- Error code parsing and handling
+- Account structure validation
+
+#### **Integration Tests**
+- Full deposit/withdrawal/swap flows
+- Error recovery scenarios
+- Multi-thread coordination
+- Empty command execution
+
+#### **Stress Tests**
+- High-frequency operations
+- Concurrent thread execution
+- Network failure simulation
+- Pool pause/unpause handling
+
+### 3.5.9 Success Criteria
+
+- ✅ All operations use production-tested CU values
+- ✅ Pool creation includes safety mechanisms
+- ✅ Error handling matches contract error codes
+- ✅ Thread workers perform real blockchain operations
+- ✅ Empty commands properly clean up resources
+- ✅ Statistics accurately track all operations
+- ✅ Recovery strategies handle common failures
+- ✅ Performance meets production requirements

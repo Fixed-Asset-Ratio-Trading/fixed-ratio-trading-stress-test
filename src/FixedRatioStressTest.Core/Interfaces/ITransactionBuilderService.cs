@@ -1,62 +1,67 @@
 using Solnet.Wallet;
-using Solnet.Rpc.Models;
 using FixedRatioStressTest.Common.Models;
-using SolanaTokenAccount = Solnet.Rpc.Models.TokenAccount;
-using AppTokenAccount = FixedRatioStressTest.Common.Models.TokenAccount;
 
 namespace FixedRatioStressTest.Core.Interfaces;
 
 public interface ITransactionBuilderService
 {
     /// <summary>
-    /// Creates and submits a deposit transaction to add liquidity to a pool
+    /// Builds a transaction for creating a new pool
     /// </summary>
-    Task<string> SubmitDepositTransactionAsync(
-        Wallet wallet, 
-        string poolId, 
-        TokenType tokenType, 
+    Task<byte[]> BuildCreatePoolTransactionAsync(
+        Wallet payer,
+        PoolConfig poolConfig);
+    
+    /// <summary>
+    /// Builds a transaction for depositing tokens into a pool
+    /// </summary>
+    Task<byte[]> BuildDepositTransactionAsync(
+        Wallet wallet,
+        string poolId,
+        TokenType tokenType,
+        ulong amountInBasisPoints);
+    
+    /// <summary>
+    /// Builds a transaction for withdrawing tokens from a pool
+    /// </summary>
+    Task<byte[]> BuildWithdrawalTransactionAsync(
+        Wallet wallet,
+        string poolId,
+        TokenType tokenType,
+        ulong lpTokenAmountToBurn);
+    
+    /// <summary>
+    /// Builds a transaction for swapping tokens
+    /// </summary>
+    Task<byte[]> BuildSwapTransactionAsync(
+        Wallet wallet,
+        string poolId,
+        SwapDirection direction,
+        ulong inputAmountBasisPoints,
+        ulong minimumOutputBasisPoints);
+    
+    /// <summary>
+    /// Builds a transaction for transferring tokens
+    /// </summary>
+    Task<byte[]> BuildTransferTransactionAsync(
+        Wallet fromWallet,
+        string toWalletAddress,
+        string tokenMint,
         ulong amount);
-
+    
     /// <summary>
-    /// Creates and submits a withdrawal transaction to remove liquidity from a pool
+    /// Builds a transaction for minting tokens (test only)
     /// </summary>
-    Task<string> SubmitWithdrawalTransactionAsync(
-        Wallet wallet, 
-        string poolId, 
-        TokenType tokenType, 
-        ulong lpTokenAmount);
-
-    /// <summary>
-    /// Creates and submits a swap transaction
-    /// </summary>
-    Task<string> SubmitSwapTransactionAsync(
-        Wallet wallet, 
-        string poolId, 
-        SwapDirection direction, 
-        ulong inputAmount, 
-        ulong minimumOutputAmount);
-
-    /// <summary>
-    /// Gets or creates token accounts for a wallet
-    /// </summary>
-    Task<AppTokenAccount> GetOrCreateTokenAccountAsync(Wallet wallet, string mintAddress);
-
-    /// <summary>
-    /// Gets pool information
-    /// </summary>
-    Task<PoolInfo?> GetPoolInfoAsync(string poolId);
-
-    /// <summary>
-    /// Transfers tokens between wallets (for token sharing)
-    /// </summary>
-    Task<string> TransferTokensAsync(
-        Wallet fromWallet, 
-        string toPublicKey, 
-        string mintAddress, 
+    Task<byte[]> BuildMintTransactionAsync(
+        Wallet mintAuthority,
+        string tokenMint,
+        string recipientAddress,
         ulong amount);
-
+    
     /// <summary>
-    /// Requests SOL airdrop for testing
+    /// Gets or creates associated token account for a wallet
     /// </summary>
-    Task<bool> RequestAirdropAsync(string publicKey, ulong lamports);
+    Task<string> GetOrCreateAssociatedTokenAccountAsync(
+        Wallet wallet, 
+        string mintAddress);
 }
