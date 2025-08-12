@@ -1,9 +1,9 @@
 # Fixed Ratio Trading Stress Test Service Design
 
-**Document Version:** 1.0  
+**Document Version:** 1.1  
 **Date:** January 2025  
 **Purpose:** Multi-threaded stress testing service for liquidity operations and swaps  
-**Target:** Linux daemon/service with RPC interface
+**Target:** Windows Service (.NET) with network-accessible RPC interface for high-core systems
 
 ---
 
@@ -168,15 +168,103 @@ The "empty" command enables controlled extreme scenarios by forcing threads to c
 ```
 
 ### 1.2 Technology Stack
-- **Language:** Rust (for performance and Solana ecosystem compatibility)
-- **RPC Framework:** JSON-RPC over HTTP (using `jsonrpc-http-server`)
-- **Threading:** Tokio async runtime with thread pool
-- **Storage:** JSON files for thread state persistence
-- **Solana Integration:** `solana-client`, `spl-token`
+- **Language:** C# .NET 8.0 (for high-performance concurrent operations and Windows optimization)
+- **RPC Framework:** ASP.NET Core Web API with JSON-RPC endpoint (remotely accessible)
+- **Threading:** TPL (Task Parallel Library) with custom ThreadPool optimized for 128 cores
+- **Storage:** JSON files for thread state persistence with System.Text.Json
+- **Solana Integration:** Solnet library for .NET Solana blockchain interaction
+- **Platform:** Windows Server with 128-core AMD Threadripper optimization
 
 ---
 
-## 2. Thread Types and Behavior
+## 2. High-Performance Threading Architecture for 128-Core Systems
+
+### 2.1 AMD Threadripper Optimization Strategy
+
+The stress testing service is specifically designed to leverage the full potential of a 128-core AMD Threadripper processor on Windows, implementing advanced threading strategies that maximize core utilization while maintaining optimal blockchain interaction patterns.
+
+#### **Core Allocation Strategy**
+- **Reserved Cores**: 8 cores (6.25%) reserved for system operations and RPC handling
+- **Worker Cores**: 120 cores (93.75%) dedicated to blockchain operations
+- **NUMA Optimization**: Thread affinity aligned with NUMA nodes for optimal memory access patterns
+- **Hyperthreading Awareness**: Logical cores managed to prevent resource contention
+
+#### **Thread Pool Architecture**
+```csharp
+public class ThreadripperOptimizedThreadPool
+{
+    // Configuration optimized for 128-core Threadripper
+    private const int RESERVED_CORES = 8;
+    private const int WORKER_CORES = 120;
+    private const int MAX_THREADS_PER_CORE = 4;  // Optimal for I/O-bound blockchain operations
+    private const int TOTAL_WORKER_THREADS = WORKER_CORES * MAX_THREADS_PER_CORE; // 480 threads
+    
+    // NUMA-aware thread allocation
+    private readonly NumaNodeThreadManager[] _numaManagers;
+    
+    public ThreadripperOptimizedThreadPool()
+    {
+        // Configure thread pool for maximum concurrency
+        ThreadPool.SetMinThreads(TOTAL_WORKER_THREADS, TOTAL_WORKER_THREADS);
+        ThreadPool.SetMaxThreads(TOTAL_WORKER_THREADS, TOTAL_WORKER_THREADS);
+        
+        // Initialize NUMA-aware thread managers
+        _numaManagers = InitializeNumaManagers();
+    }
+}
+```
+
+#### **Concurrent Operation Scaling**
+- **Maximum Concurrent Pools**: 50+ pools simultaneously
+- **Threads per Pool**: Up to 20 threads (5 deposit, 5 withdrawal, 10 swap threads)
+- **Total Thread Capacity**: 1000+ concurrent blockchain operations
+- **Operation Throughput**: 2000+ transactions per minute aggregate across all pools
+
+#### **Memory Architecture Optimization**
+- **NUMA-Aware Allocation**: Thread-local storage aligned with processor NUMA topology
+- **Memory Pool Management**: Pre-allocated object pools to minimize GC pressure
+- **Lock-Free Structures**: Concurrent collections optimized for high-core systems
+- **CPU Cache Optimization**: Data structures designed for optimal L1/L2/L3 cache utilization
+
+```csharp
+public class NumaOptimizedWorkerThread
+{
+    [ThreadStatic]
+    private static readonly MemoryPool<byte> ThreadLocalMemoryPool;
+    
+    [ThreadStatic] 
+    private static readonly ConcurrentQueue<TransactionResult> LocalResultQueue;
+    
+    // Thread affinity set based on NUMA node assignment
+    private readonly int _numaNode;
+    private readonly int _coreId;
+    
+    public async Task ExecuteWithNumaOptimization()
+    {
+        // Set thread affinity to specific core within NUMA node
+        SetThreadAffinityMask(GetCurrentThread(), 1UL << _coreId);
+        
+        // Execute blockchain operations with optimal memory access
+        await ProcessBlockchainOperations();
+    }
+}
+```
+
+#### **I/O Optimization for Blockchain Operations**
+- **Connection Pooling**: 128 persistent RPC connections to Solana cluster
+- **Async/Await Scaling**: Non-blocking I/O operations across all cores
+- **Batch Processing**: Intelligent transaction batching to maximize network utilization
+- **Load Balancing**: RPC endpoint rotation to distribute network load
+
+### 2.2 Performance Monitoring and Tuning
+- **Real-time Core Utilization**: Monitor per-core usage and automatically balance loads
+- **Memory Pressure Detection**: Automatic GC tuning based on allocation patterns
+- **Network Throughput Monitoring**: Track RPC latency and adjust concurrency accordingly
+- **Thermal Monitoring**: CPU temperature awareness for sustained high-load operations
+
+---
+
+## 3. Thread Types and Behavior
 
 ### 2.1 Deposit Threads
 **Purpose:** Continuously deposit tokens into pool liquidity to stress test liquidity management and LP token mathematics
@@ -663,9 +751,94 @@ impl SwapThread {
 
 ---
 
-## 3. RPC API Specification
+## 4. Network-Accessible RPC API Specification
 
-### 3.1 Pool Management
+### 4.1 Remote Access Configuration
+
+The stress testing service provides a fully network-accessible JSON-RPC API designed for remote operation across your local network infrastructure.
+
+#### **Network Architecture**
+- **Protocol**: HTTP/HTTPS JSON-RPC 2.0
+- **Default Port**: 8080 (HTTP), 8443 (HTTPS)
+- **Binding**: Configurable IP binding (0.0.0.0 for all interfaces)
+- **Authentication**: Optional API key authentication for secure remote access
+- **CORS Support**: Enabled for cross-origin requests from management interfaces
+
+#### **Windows Networking Configuration**
+```json
+{
+  "NetworkConfiguration": {
+    "BindAddress": "0.0.0.0",           // Listen on all network interfaces
+    "HttpPort": 8080,                   // HTTP JSON-RPC endpoint
+    "HttpsPort": 8443,                  // HTTPS JSON-RPC endpoint (optional)
+    "EnableHttps": false,               // Set to true for encrypted connections
+    "AllowedOrigins": ["*"],            // CORS origins (restrict for security)
+    "ApiKeyRequired": false,            // Set to true for authenticated access
+    "MaxConcurrentConnections": 200,    // Limit concurrent client connections
+    "RequestTimeout": 30000,            // Request timeout in milliseconds
+    "EnableCompression": true           // GZIP compression for responses
+  }
+}
+```
+
+#### **Windows Firewall Requirements**
+The service requires Windows Firewall rules for network accessibility:
+
+```powershell
+# PowerShell commands to configure Windows Firewall
+New-NetFirewallRule -DisplayName "Stress Test RPC HTTP" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
+New-NetFirewallRule -DisplayName "Stress Test RPC HTTPS" -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow
+
+# For specific network segments (recommended)
+New-NetFirewallRule -DisplayName "Stress Test RPC Local Network" -Direction Inbound -Protocol TCP -LocalPort 8080 -RemoteAddress 192.168.0.0/16,10.0.0.0/8,172.16.0.0/12 -Action Allow
+```
+
+#### **Remote Client Connection Examples**
+```csharp
+// C# client example
+var client = new HttpClient();
+var request = new
+{
+    jsonrpc = "2.0",
+    method = "get_all_threads",
+    @params = new { },
+    id = 1
+};
+
+var response = await client.PostAsJsonAsync(
+    "http://threadripper-server:8080/rpc", 
+    request
+);
+
+// PowerShell client example
+$body = @{
+    jsonrpc = "2.0"
+    method = "create_pool"
+    params = @{
+        token_a_decimals = 9
+        token_b_decimals = 6
+    }
+    id = 1
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://192.168.1.100:8080/rpc" -Method Post -Body $body -ContentType "application/json"
+```
+
+#### **Network Performance Optimization**
+- **Keep-Alive Connections**: Persistent connections for reduced latency
+- **Request Pipelining**: Multiple concurrent requests supported
+- **Response Caching**: Configurable caching for status endpoints
+- **Bandwidth Management**: Automatic response compression for large payloads
+
+### 4.2 Enhanced Security Features for Remote Access
+- **IP Whitelisting**: Restrict access to specific network ranges
+- **Rate Limiting**: Prevent abuse with configurable request limits
+- **SSL/TLS Support**: Optional encrypted connections for sensitive operations
+- **Audit Logging**: Complete request/response logging for remote access monitoring
+
+## 5. RPC API Methods
+
+### 5.1 Pool Management
 
 #### `create_pool`
 Creates a new trading pool with token pair
@@ -727,7 +900,7 @@ Lists all existing pools
 }
 ```
 
-### 3.2 Thread Management
+### 5.2 Thread Management
 
 #### `create_deposit_thread`
 Creates a new deposit thread
@@ -887,7 +1060,7 @@ Forces a thread to use all its tokens/LP tokens immediately and burn any receive
 }
 ```
 
-### 3.3 Status and Monitoring
+### 5.3 Status and Monitoring
 
 #### `get_thread_status`
 Gets detailed status for a specific thread
@@ -944,7 +1117,7 @@ Gets detailed status for a specific thread
 }
 ```
 
-### 3.4 Read-Only Thread Monitoring Data
+### 5.4 Read-Only Thread Monitoring Data
 
 Each thread provides comprehensive read-only data for real-time monitoring and analysis. This data is accessible via the `get_thread_status` RPC call and updated continuously during thread operation.
 
@@ -1524,85 +1697,228 @@ sessions/
 
 ---
 
-## 5. Core Engine Implementation
+## 6. Core Engine Implementation (.NET)
 
-### 5.1 Thread Pool Manager
-```rust
-pub struct ThreadPoolManager {
-    threads: HashMap<String, ThreadHandle>,
-    storage: JsonStorage,
-    solana_client: Arc<RpcClient>,
-}
+### 6.1 Thread Pool Manager
+```csharp
+public class ThreadPoolManager
+{
+    private readonly ConcurrentDictionary<string, ThreadHandle> _threads;
+    private readonly IJsonStorage _storage;
+    private readonly ISolanaClient _solanaClient;
+    private readonly ILogger<ThreadPoolManager> _logger;
+    private readonly ThreadripperOptimizedThreadPool _threadPool;
 
-impl ThreadPoolManager {
-    pub async fn create_deposit_thread(&mut self, config: DepositThreadConfig) -> Result<String> {
-        // Generate unique thread ID
-        // Create new keypair
-        // Write thread config to threads.json
+    public ThreadPoolManager(
+        IJsonStorage storage,
+        ISolanaClient solanaClient,
+        ILogger<ThreadPoolManager> logger)
+    {
+        _threads = new ConcurrentDictionary<string, ThreadHandle>();
+        _storage = storage;
+        _solanaClient = solanaClient;
+        _logger = logger;
+        _threadPool = new ThreadripperOptimizedThreadPool();
+    }
+
+    public async Task<string> CreateDepositThreadAsync(DepositThreadConfig config)
+    {
+        // Generate unique thread ID using Guid
+        var threadId = $"deposit_{Guid.NewGuid():N}";
+        
+        // Create new Solana keypair
+        var keypair = Keypair.Generate();
+        
+        // Write thread config to threads.json with Windows-safe paths
+        await _storage.SaveThreadConfigAsync(threadId, config);
+        
         // Initialize statistics in statistics.json
-        // Create error log file in errors/ directory
-        // Return thread ID
+        await _storage.InitializeThreadStatisticsAsync(threadId);
+        
+        // Create error log file in C:\StressTestData\errors\ directory
+        await _storage.CreateErrorLogAsync(threadId);
+        
+        return threadId;
     }
     
-    pub async fn start_thread(&mut self, thread_id: &str) -> Result<()> {
+    public async Task StartThreadAsync(string threadId)
+    {
         // Load thread state from threads.json
-        // Restore wallet state from keypair
+        var config = await _storage.LoadThreadConfigAsync(threadId);
+        
+        // Restore wallet state from encrypted keypair
+        var keypair = await _storage.LoadKeypairAsync(threadId);
+        
         // Reset current statistics to zero in statistics.json
+        await _storage.ResetThreadStatisticsAsync(threadId);
+        
         // Record start time and reason
-        // Spawn worker task
+        await _storage.RecordSessionStartAsync(threadId, DateTime.UtcNow, "manual_start");
+        
+        // Spawn worker task using TPL optimized for 128 cores
+        var cancellationToken = new CancellationTokenSource();
+        var task = Task.Run(async () => await ExecuteWorkerThreadAsync(config, keypair, cancellationToken.Token));
+        
+        // Store thread handle
+        _threads[threadId] = new ThreadHandle(task, cancellationToken);
+        
         // Update status to "running" in threads.json
+        await _storage.UpdateThreadStatusAsync(threadId, ThreadStatus.Running);
     }
     
-    pub async fn stop_thread(&mut self, thread_id: &str) -> Result<()> {
+    public async Task StopThreadAsync(string threadId)
+    {
+        if (!_threads.TryGetValue(threadId, out var handle))
+            throw new InvalidOperationException($"Thread {threadId} not found");
+        
         // Send stop signal to thread
-        // Wait for graceful shutdown
+        handle.CancellationTokenSource.Cancel();
+        
+        // Wait for graceful shutdown with timeout
+        await handle.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        
         // Capture final verification totals
-        // Save complete session data to sessions/{thread_id}/session_{timestamp}.json
+        var verificationData = await _storage.GetCurrentStatisticsAsync(threadId);
+        
+        // Save complete session data to C:\StressTestData\sessions\{threadId}\session_{timestamp}.json
+        var sessionData = new ThreadSession
+        {
+            ThreadId = threadId,
+            StartTime = DateTime.UtcNow,
+            EndTime = DateTime.UtcNow,
+            VerificationTotals = verificationData
+        };
+        await _storage.SaveSessionAsync(threadId, sessionData);
+        
         // Update final state to threads.json
-        // Update status to "stopped"
+        await _storage.UpdateThreadStatusAsync(threadId, ThreadStatus.Stopped);
+        
+        // Clean up thread handle
+        _threads.TryRemove(threadId, out _);
     }
     
-    pub async fn empty_thread(&mut self, thread_id: &str) -> Result<EmptyResult> {
+    public async Task<EmptyResult> EmptyThreadAsync(string threadId)
+    {
         // Load thread configuration from threads.json
-        // Execute appropriate empty command based on thread type:
-        //   - Deposit: Use all tokens, burn received LP tokens
-        //   - Withdrawal: Use all LP tokens, burn received tokens  
-        //   - Swap: Use all input tokens, burn received output tokens
-        // Update statistics with empty operation
-        // Return detailed empty operation results
+        var config = await _storage.LoadThreadConfigAsync(threadId);
+        
+        // Execute appropriate empty command based on thread type
+        return config.ThreadType switch
+        {
+            ThreadType.Deposit => await ExecuteDepositEmptyAsync(threadId, config),
+            ThreadType.Withdrawal => await ExecuteWithdrawalEmptyAsync(threadId, config),
+            ThreadType.Swap => await ExecuteSwapEmptyAsync(threadId, config),
+            _ => throw new ArgumentException($"Unknown thread type: {config.ThreadType}")
+        };
     }
 }
 
-pub struct JsonStorage {
-    data_dir: PathBuf,
+public interface IJsonStorage
+{
+    Task SaveThreadConfigAsync(string threadId, ThreadConfig config);
+    Task<ThreadConfig> LoadThreadConfigAsync(string threadId);
+    Task SaveStatisticsAsync(Dictionary<string, ThreadStatistics> statistics);
+    Task ResetThreadStatisticsAsync(string threadId);
+    Task SaveSessionAsync(string threadId, ThreadSession sessionData);
+    Task AddErrorAsync(string threadId, ThreadError error);
 }
 
-impl JsonStorage {
-    pub async fn save_threads(&self, threads: &HashMap<String, ThreadConfig>) -> Result<()> {
-        // Atomic write to threads.json using temp file + rename
+public class WindowsJsonStorage : IJsonStorage
+{
+    private readonly string _dataDirectory;
+    private readonly ILogger<WindowsJsonStorage> _logger;
+    private readonly SemaphoreSlim _fileLock;
+    private readonly JsonSerializerOptions _jsonOptions;
+
+    public WindowsJsonStorage(IConfiguration configuration, ILogger<WindowsJsonStorage> logger)
+    {
+        _dataDirectory = configuration.GetValue<string>("StorageConfiguration:DataDirectory") 
+                        ?? @"C:\StressTestData";
+        _logger = logger;
+        _fileLock = new SemaphoreSlim(1, 1);
+        
+        // Configure JSON serialization for Windows compatibility
+        _jsonOptions = new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        };
+        
+        // Ensure directories exist with appropriate Windows permissions
+        EnsureDirectoriesExist();
+    }
+
+    public async Task SaveThreadConfigAsync(string threadId, ThreadConfig config)
+    {
+        await _fileLock.WaitAsync();
+        try
+        {
+            var threadsFile = Path.Combine(_dataDirectory, "threads.json");
+            var tempFile = $"{threadsFile}.tmp";
+            
+            // Load existing threads
+            var threads = await LoadAllThreadsAsync() ?? new Dictionary<string, ThreadConfig>();
+            threads[threadId] = config;
+            
+            // Atomic write using temp file + move (Windows-safe)
+            var json = JsonSerializer.Serialize(new { threads }, _jsonOptions);
+            await File.WriteAllTextAsync(tempFile, json);
+            
+            // Use File.Move for atomic operation on Windows
+            if (File.Exists(threadsFile))
+                File.Replace(tempFile, threadsFile, $"{threadsFile}.backup");
+            else
+                File.Move(tempFile, threadsFile);
+        }
+        finally
+        {
+            _fileLock.Release();
+        }
     }
     
-    pub async fn load_threads(&self) -> Result<HashMap<String, ThreadConfig>> {
-        // Read and parse threads.json
+    public async Task<ThreadConfig> LoadThreadConfigAsync(string threadId)
+    {
+        var threads = await LoadAllThreadsAsync();
+        return threads?.GetValueOrDefault(threadId) 
+               ?? throw new KeyNotFoundException($"Thread {threadId} not found");
     }
     
-    pub async fn save_statistics(&self, stats: &HashMap<String, ThreadStatistics>) -> Result<()> {
-        // Atomic write to statistics.json
+    private async Task<Dictionary<string, ThreadConfig>?> LoadAllThreadsAsync()
+    {
+        var threadsFile = Path.Combine(_dataDirectory, "threads.json");
+        if (!File.Exists(threadsFile))
+            return new Dictionary<string, ThreadConfig>();
+            
+        var json = await File.ReadAllTextAsync(threadsFile);
+        var data = JsonSerializer.Deserialize<dynamic>(json, _jsonOptions);
+        return data?.threads?.ToObject<Dictionary<string, ThreadConfig>>();
     }
     
-    pub async fn reset_thread_statistics(&self, thread_id: &str) -> Result<()> {
-        // Reset specific thread's statistics to zero in statistics.json
-        // Preserve verification_totals structure but zero all values
-    }
-    
-    pub async fn save_session(&self, thread_id: &str, session_data: ThreadSession) -> Result<()> {
-        // Create sessions/{thread_id}/ directory if needed
-        // Save session data to sessions/{thread_id}/session_{timestamp}.json
-        // Include verification totals, pool verification data, and session metadata
-    }
-    
-    pub async fn add_error(&self, thread_id: &str, error: ThreadError) -> Result<()> {
-        // Append to errors/{thread_id}.json, keep only last 10
+    private void EnsureDirectoriesExist()
+    {
+        // Create directory structure with Windows-appropriate permissions
+        var directories = new[]
+        {
+            _dataDirectory,
+            Path.Combine(_dataDirectory, "errors"),
+            Path.Combine(_dataDirectory, "sessions"),
+            Path.Combine(_dataDirectory, "backups")
+        };
+        
+        foreach (var dir in directories)
+        {
+            if (!Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+                
+                // Set appropriate Windows ACLs for service account access
+                var dirInfo = new DirectoryInfo(dir);
+                var security = dirInfo.GetAccessControl();
+                security.SetAccessRuleProtection(false, true); // Inherit parent permissions
+                dirInfo.SetAccessControl(security);
+            }
+        }
     }
 }
 ```
@@ -1727,68 +2043,339 @@ impl DepositWorker {
 
 ---
 
-## 7. Performance Considerations
+## 7. Windows & 128-Core Performance Considerations
 
-### 7.1 Concurrency Design
-- Async/await for I/O operations
-- Thread-safe shared state using Arc<Mutex<>>
-- Connection pooling for RPC client
-- Batch transaction submissions where possible
+### 7.1 High-Core Concurrency Design for Windows
+- **Task Parallel Library (TPL)**: Optimized async/await patterns for I/O-bound blockchain operations
+- **Concurrent Collections**: Thread-safe data structures designed for high-core contention scenarios
+- **Connection Pooling**: 128 persistent HTTP/WebSocket connections to Solana RPC endpoints
+- **Batch Processing**: Intelligent transaction batching to maximize 128-core throughput
 
-### 7.2 Resource Management
-- Memory-efficient data structures
-- Database connection pooling
-- Graceful resource cleanup on shutdown
-- Configurable thread limits (future enhancement)
+```csharp
+// Example of 128-core optimized connection pool
+public class ThreadripperSolanaConnectionPool
+{
+    private readonly ConcurrentQueue<HttpClient> _connectionPool;
+    private readonly SemaphoreSlim _connectionSemaphore;
+    
+    public ThreadripperSolanaConnectionPool()
+    {
+        // Create 128 connections for optimal core utilization
+        var connections = Enumerable.Range(0, 128)
+            .Select(_ => CreateOptimizedHttpClient())
+            .ToArray();
+            
+        _connectionPool = new ConcurrentQueue<HttpClient>(connections);
+        _connectionSemaphore = new SemaphoreSlim(128, 128);
+    }
+    
+    private HttpClient CreateOptimizedHttpClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+            MaxConnectionsPerServer = 10,
+            EnableMultipleHttp2Connections = true
+        };
+        
+        return new HttpClient(handler);
+    }
+}
+```
 
-### 7.3 Monitoring and Metrics
-- Real-time transaction throughput
-- Error rate tracking
-- Wallet balance monitoring
-- Database performance metrics
+### 7.2 Windows-Specific Resource Management
+- **NUMA-Aware Memory Allocation**: Leverage Windows NUMA APIs for optimal memory placement
+- **Large Page Support**: Configure application for 2MB pages to reduce TLB misses
+- **Process Priority**: High priority class for sustained high-throughput operations
+- **Garbage Collection Tuning**: Server GC with concurrent collection optimized for 128-core systems
+
+```csharp
+// Windows-specific performance optimizations
+public static class WindowsPerformanceOptimizer
+{
+    public static void OptimizeForThreadripper()
+    {
+        // Configure GC for high-core systems
+        GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
+        
+        // Set process priority for maximum performance
+        Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High;
+        
+        // Configure ThreadPool for 128-core utilization
+        ThreadPool.SetMinThreads(480, 480);
+        ThreadPool.SetMaxThreads(480, 480);
+        
+        // Enable large pages if available
+        if (IsLargePagesSupported())
+        {
+            EnableLargePages();
+        }
+        
+        // Set CPU affinity to exclude system-reserved cores
+        SetOptimalProcessorAffinity();
+    }
+    
+    [DllImport("kernel32.dll")]
+    private static extern bool SetProcessAffinityMask(IntPtr hProcess, UIntPtr dwProcessAffinityMask);
+    
+    private static void SetOptimalProcessorAffinity()
+    {
+        // Reserve cores 0-7 for system, use 8-127 for workers
+        var affinityMask = (UIntPtr)(Math.Pow(2, 128) - 1 - 255);
+        SetProcessAffinityMask(Process.GetCurrentProcess().Handle, affinityMask);
+    }
+}
+```
+
+### 7.3 Memory Architecture Optimization
+- **Thread-Local Storage**: Minimize cross-core memory sharing
+- **Lock-Free Data Structures**: Utilize .NET concurrent collections optimized for high-core systems
+- **Object Pooling**: Pre-allocated pools for transaction objects and buffers
+- **Memory Mapped Files**: For large session data storage with optimal Windows caching
+
+```csharp
+public class HighPerformanceObjectPool<T> where T : class, new()
+{
+    private readonly ConcurrentBag<T> _objects = new();
+    private readonly Func<T> _objectGenerator;
+    private readonly int _maxObjects;
+    private int _currentCount;
+    
+    public HighPerformanceObjectPool(int maxObjects = 10000)
+    {
+        _maxObjects = maxObjects;
+        _objectGenerator = () => new T();
+        
+        // Pre-warm the pool for 128-core systems
+        Parallel.For(0, Math.Min(maxObjects, Environment.ProcessorCount * 8), _ =>
+        {
+            _objects.Add(_objectGenerator());
+            Interlocked.Increment(ref _currentCount);
+        });
+    }
+}
+```
+
+### 7.4 Network I/O Optimization
+- **HTTP/2 Multiplexing**: Multiple concurrent requests per connection
+- **TCP Window Scaling**: Optimized for high-bandwidth blockchain operations
+- **DNS Caching**: Reduce RPC endpoint resolution overhead
+- **Connection Keep-Alive**: Persistent connections with optimal timeout settings
+
+### 7.5 Monitoring and Metrics for 128-Core Systems
+- **Per-Core CPU Utilization**: Real-time monitoring of individual core usage
+- **NUMA Node Performance**: Track memory access patterns across NUMA domains
+- **Transaction Throughput by Core**: Identify bottlenecks in core utilization
+- **Memory Pressure by Thread**: Monitor GC pressure across worker threads
+- **Network Saturation**: Track RPC endpoint utilization and latency
+
+```csharp
+public class ThreadripperPerformanceMonitor
+{
+    private readonly PerformanceCounter[] _cpuCounters;
+    private readonly MemoryMappedFile _metricsFile;
+    
+    public ThreadripperPerformanceMonitor()
+    {
+        // Create performance counters for all 128 cores
+        _cpuCounters = Enumerable.Range(0, Environment.ProcessorCount)
+            .Select(i => new PerformanceCounter("Processor", "% Processor Time", i.ToString()))
+            .ToArray();
+            
+        // Memory-mapped file for high-frequency metrics
+        _metricsFile = MemoryMappedFile.CreateNew("ThreadripperMetrics", 1024 * 1024);
+    }
+    
+    public async Task MonitorContinuously(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var coreUsages = _cpuCounters.Select(c => c.NextValue()).ToArray();
+            var memoryUsage = GC.GetTotalMemory(false);
+            var threadCount = Process.GetCurrentProcess().Threads.Count;
+            
+            // Log high-frequency metrics
+            LogMetrics(coreUsages, memoryUsage, threadCount);
+            
+            await Task.Delay(1000, cancellationToken);
+        }
+    }
+}
+```
+
+### 7.6 Windows-Specific Optimizations
+- **Windows Performance Toolkit**: ETW tracing for detailed performance analysis
+- **CPU Affinity Management**: Optimal core assignment for different thread types
+- **Power Management**: High-performance power plan to prevent CPU throttling
+- **System Timer Resolution**: Increase timer resolution for precise timing operations
 
 ---
 
-## 8. Deployment and Configuration
+## 8. Windows Service Deployment and Configuration
 
-### 8.1 Service Configuration
-```toml
-# stress_test_config.toml
-[daemon]
-bind_address = "0.0.0.0:8080"
-log_level = "info"
-data_directory = "./stress_test_data"
-
-[solana]
-rpc_url = "http://localhost:8899"
-commitment = "confirmed"
-
-[threading]
-sol_threshold = 1000000000  # 1 SOL in lamports
-error_history_limit = 10
-operation_timeout_ms = 30000
-
-[master_wallet]
-keypair_path = "./master_wallet.json"
+### 8.1 Service Configuration (appsettings.json)
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "NetworkConfiguration": {
+    "BindAddress": "0.0.0.0",
+    "HttpPort": 8080,
+    "HttpsPort": 8443,
+    "EnableHttps": false,
+    "AllowedOrigins": ["*"],
+    "ApiKeyRequired": false,
+    "MaxConcurrentConnections": 200,
+    "RequestTimeout": 30000,
+    "EnableCompression": true
+  },
+  "SolanaConfiguration": {
+    "RpcUrl": "http://localhost:8899",
+    "Commitment": "confirmed",
+    "MaxRetries": 3,
+    "TimeoutMs": 30000
+  },
+  "ThreadingConfiguration": {
+    "ReservedCores": 8,
+    "WorkerCores": 120,
+    "MaxThreadsPerCore": 4,
+    "TotalWorkerThreads": 480,
+    "SolThreshold": 1000000000,
+    "ErrorHistoryLimit": 10,
+    "EnableNumaOptimization": true
+  },
+  "StorageConfiguration": {
+    "DataDirectory": "C:\\StressTestData",
+    "BackupEnabled": true,
+    "BackupRetentionDays": 30,
+    "SessionRetentionDays": 90
+  },
+  "MasterWalletConfiguration": {
+    "KeypairPath": "C:\\StressTestData\\master_wallet.json",
+    "EncryptionEnabled": true
+  },
+  "PerformanceMonitoring": {
+    "EnableCpuMonitoring": true,
+    "EnableMemoryMonitoring": true,
+    "EnableNetworkMonitoring": true,
+    "MetricsIntervalSeconds": 30,
+    "ThermalMonitoringEnabled": true
+  }
+}
 ```
 
-### 8.2 Systemd Service
-```ini
-[Unit]
-Description=Fixed Ratio Trading Stress Test Service
-After=network.target
+### 8.2 Windows Service Installation
 
-[Service]
-Type=simple
-User=stress-test
-WorkingDirectory=/opt/stress-test
-ExecStart=/opt/stress-test/stress-test-daemon
-Restart=always
-RestartSec=5
+#### **Service Installation PowerShell Script**
+```powershell
+# Install-StressTestService.ps1
 
-[Install]
-WantedBy=multi-user.target
+# Stop and remove existing service if it exists
+try {
+    Stop-Service -Name "FixedRatioStressTest" -Force -ErrorAction SilentlyContinue
+    Remove-Service -Name "FixedRatioStressTest" -ErrorAction SilentlyContinue
+} catch { }
+
+# Create service directory
+$ServicePath = "C:\Services\FixedRatioStressTest"
+New-Item -ItemType Directory -Path $ServicePath -Force
+
+# Copy application files
+Copy-Item -Path ".\bin\Release\net8.0\*" -Destination $ServicePath -Recurse -Force
+
+# Create Windows Service using SC command
+$ServiceName = "FixedRatioStressTest"
+$ServiceDisplayName = "Fixed Ratio Trading Stress Test Service"
+$ServiceDescription = "High-performance stress testing service for Fixed Ratio Trading smart contract"
+$ExecutablePath = "$ServicePath\FixedRatioStressTest.exe"
+
+# Install the service
+sc.exe create $ServiceName binPath= $ExecutablePath start= auto
+sc.exe config $ServiceName DisplayName= $ServiceDisplayName
+sc.exe description $ServiceName $ServiceDescription
+
+# Configure service recovery options
+sc.exe failure $ServiceName reset= 86400 actions= restart/60000/restart/60000/restart/60000
+
+# Set service to run as Local System with increased privileges
+sc.exe config $ServiceName obj= "LocalSystem"
+
+# Configure Windows Firewall
+New-NetFirewallRule -DisplayName "Stress Test RPC HTTP" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
+New-NetFirewallRule -DisplayName "Stress Test RPC HTTPS" -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow
+
+# Start the service
+Start-Service -Name $ServiceName
+
+Write-Host "Fixed Ratio Stress Test Service installed and started successfully"
+Write-Host "Service can be accessed remotely at http://[server-ip]:8080/rpc"
 ```
+
+#### **Service Wrapper Configuration**
+```csharp
+// Program.cs - Service Host Configuration
+public class Program
+{
+    public static async Task Main(string[] args)
+    {
+        var builder = WebApplication.CreateBuilder(args);
+        
+        // Configure for Windows Service
+        builder.Services.AddWindowsService(options =>
+        {
+            options.ServiceName = "Fixed Ratio Stress Test Service";
+        });
+        
+        // Configure high-performance thread pool for 128 cores
+        ThreadPool.SetMinThreads(480, 480);
+        ThreadPool.SetMaxThreads(480, 480);
+        
+        // Configure process priority for maximum performance
+        Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High;
+        
+        // Configure GC settings for high-throughput scenarios
+        GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
+        
+        // Add services
+        builder.Services.AddStressTestServices();
+        
+        var app = builder.Build();
+        
+        // Configure network accessibility
+        app.UseRouting();
+        app.UseCors(policy => policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
+        
+        // Configure JSON-RPC endpoint
+        app.MapPost("/rpc", HandleJsonRpcRequest);
+        
+        await app.RunAsync();
+    }
+}
+```
+
+### 8.3 Performance Optimization Configuration
+
+#### **NUMA and CPU Affinity Setup**
+```powershell
+# Configure processor affinity for optimal 128-core utilization
+# Reserve cores 0-7 for system operations, use cores 8-127 for workers
+
+# Set process affinity (example for 128-core system)
+$ProcessId = Get-Process -Name "FixedRatioStressTest" | Select-Object -ExpandProperty Id
+$AffinityMask = [math]::Pow(2, 128) - 1 - 255  # All cores except 0-7
+[System.Diagnostics.Process]::GetProcessById($ProcessId).ProcessorAffinity = $AffinityMask
+```
+
+#### **Windows Performance Optimizations**
+- **High Performance Power Plan**: Ensures all cores run at maximum frequency
+- **Disable CPU Throttling**: Prevents thermal or power-based performance reduction
+- **Increase Network Buffer Sizes**: Optimizes for high-throughput RPC operations
+- **Configure Large Pages**: Improves memory allocation performance for high-core systems
 
 ### 8.3 Logging
 - Structured logging with timestamps
