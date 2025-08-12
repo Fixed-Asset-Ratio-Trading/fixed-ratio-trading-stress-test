@@ -677,20 +677,185 @@ public class CreateThreadResult
 
 ## 🎯 Phase 3: Core Operations Implementation
 
-### 3.1 Deposit Operations
-- Implement actual deposit transactions
-- Add LP token calculation
-- Implement token sharing between threads
+**📚 API Reference:** See `docs/API.md` for the complete Fixed Ratio Trading Contract API documentation with detailed function signatures, account structures, and implementation examples.
 
-### 3.2 Withdrawal Operations
-- Implement withdrawal transactions
-- Add LP token validation
-- Implement token distribution
+### 3.1 Contract Integration Foundation
 
-### 3.3 Swap Operations
-- Implement swap transactions
-- Add price impact calculation
-- Implement cross-thread token exchange
+#### 3.1.1 Enhanced Configuration
+- **Program ID Configuration**: Add network-specific program IDs from API docs
+- **Contract Settings**: Configure fees, compute units, and operational parameters
+- **Network Selection**: Support localnet (`4aeVqtWhrUh6wpX8acNj2hpWXKEQwxjA3PYb2sHhNyCn`), devnet (`9iqh69RqeG3RRrFBNZVoE77TMRvYboFUtC2sykaFVzB7`), and mainnet (`quXSYkeZ8ByTCtYY1J1uxQmE36UZ3LmNGgE3CYMFixD`)
+- **Localnet RPC Configuration**: Use `http://192.168.2.88:8899` for local development (per shared-config.json)
+- **Public Access via ngrok**: Use `https://fixed.ngrok.app` for external testing (including Backpack wallet)
+- **Basis Point Conversion**: All amounts must be converted to basis points (smallest token units)
+- **Test Wallet**: Use provided localnet wallet `5GGZiMwU56rYL1L52q7Jz7ELkSN4iYyQqdv418hxPh6t` (LOCALNET ONLY!)
+
+#### 3.1.2 Account Management System
+- **PDA Derivation**: Implement proper Program Derived Address calculation for pool states, vaults, and LP mints
+- **Token Account Handling**: Create and manage Associated Token Accounts for users and LP tokens
+- **System State Integration**: Connect to contract's system state for pause validation
+- **Treasury Integration**: Route fees to contract's main treasury
+
+#### 3.1.3 Pool Normalization
+- **Token Ordering**: Implement lexicographic token ordering (smaller pubkey = Token A)
+- **Ratio Normalization**: Ensure one side equals exactly `10^decimals` (anchored to 1 rule)
+- **Configuration Validation**: Use `normalize_pool_config()` pattern to prevent costly mistakes
+- **Pool Creation Safety**: Validate ratios before spending 1.15 SOL pool creation fee (REGISTRATION_FEE constant)
+
+### 3.2 Real Transaction Implementation
+
+#### 3.2.1 Deposit Operations (`process_liquidity_deposit`)
+- **Single Token Deposits**: Implement either Token A OR Token B deposits (not both)
+- **1:1 LP Minting**: Receive LP tokens in exact 1:1 ratio with deposited amount  
+- **Account Structure**: 12 accounts including user wallet, pool state, vaults, LP mints
+- **Fee Handling**: Pay 0.0013 SOL fee per deposit operation (DEPOSIT_WITHDRAWAL_FEE constant)
+- **Compute Units**: Allocate 310,000 CUs for reliable execution (Dashboard tested: min observed 249K; set 310K for safety margin)
+- **Token Validation**: Ensure deposit token is one of pool's supported tokens
+
+```csharp
+// Example deposit operation structure
+public async Task<string> SubmitDepositTransactionAsync(
+    Wallet wallet, 
+    string poolId, 
+    TokenType tokenType, 
+    ulong amountInBasisPoints)
+{
+    // 1. Derive pool state PDA
+    // 2. Get appropriate token vault (A or B)
+    // 3. Get LP token mint (A or B based on deposit)
+    // 4. Create/get user's LP token account
+    // 5. Build 12-account instruction
+    // 6. Submit with 310k CU limit and 0.0013 SOL fee
+}
+```
+
+#### 3.2.2 Withdrawal Operations (`process_liquidity_withdraw`)
+- **LP Token Burning**: Burn Token A LP or Token B LP tokens (not both)
+- **Token Recovery**: Receive underlying tokens matching LP token type
+- **Account Validation**: Ensure user has sufficient LP tokens
+- **Fee Payment**: Pay 0.0013 SOL withdrawal fee (DEPOSIT_WITHDRAWAL_FEE constant)
+- **Compute Units**: Allocate 290,000 CUs for execution (Dashboard tested: min observed 227K; set 290K for safety margin)
+- **Balance Updates**: Update pool liquidity tracking
+
+```csharp
+// Example withdrawal operation structure  
+public async Task<string> SubmitWithdrawalTransactionAsync(
+    Wallet wallet,
+    string poolId, 
+    TokenType tokenType,
+    ulong lpTokenAmountToBurn)
+{
+    // 1. Validate LP token ownership
+    // 2. Derive pool and vault PDAs
+    // 3. Build withdrawal instruction
+    // 4. Submit with 290k CU limit
+}
+```
+
+#### 3.2.3 Swap Operations (`process_swap_execute`)
+- **Fixed Ratio Swaps**: Use predetermined exchange rates (zero slippage)
+- **Exact Input Model**: User specifies input, receives calculated output
+- **Mathematical Formula**: `output = (input × output_ratio) ÷ input_ratio`
+- **Slippage Protection**: Validate expected minimum output
+- **Fee Structure**: Pay 0.00002715 SOL per swap (SWAP_CONTRACT_FEE constant)
+- **Compute Units**: Allocate 250,000 CUs for execution (Dashboard tested: 202K works; set to 250K for headroom)
+
+```csharp
+// Example swap calculation and execution
+public async Task<string> SubmitSwapTransactionAsync(
+    Wallet wallet,
+    string poolId,
+    SwapDirection direction,
+    ulong inputAmountBasisPoints,
+    ulong minimumOutputBasisPoints)
+{
+    // 1. Load pool configuration and ratios
+    // 2. Calculate exact output: (input × output_ratio) ÷ input_ratio  
+    // 3. Validate against minimum expected
+    // 4. Build 11-account swap instruction
+    // 5. Submit with 250k CU limit
+}
+```
+
+### 3.3 Enhanced Thread Operations
+
+#### 3.3.1 Deposit Thread Enhancement
+- **Balance Monitoring**: Check token balances before operations
+- **Amount Calculation**: Random amounts from 1bp to 5% of balance (per design spec)
+- **Airdrop Management**: Request SOL airdrops when balance < 0.1 SOL
+- **LP Token Sharing**: Distribute earned LP tokens to withdrawal threads (if enabled)
+- **Error Handling**: Handle contract-specific errors (1001-1042 error codes)
+
+#### 3.3.2 Withdrawal Thread Enhancement  
+- **LP Token Validation**: Verify LP token availability and type compatibility
+- **Active Waiting**: Wait for LP tokens from deposit threads
+- **Pool Verification**: Ensure LP tokens belong to correct pool
+- **Token Distribution**: Share withdrawn tokens with deposit threads
+- **Patience Logic**: Continue waiting without consuming resources
+
+#### 3.3.3 Swap Thread Enhancement
+- **Direction Management**: Handle A→B and B→A swap directions
+- **Cross-Thread Exchange**: Transfer received tokens to opposite-direction threads
+- **Pool Ratio Awareness**: Use contract's fixed ratios for calculations
+- **Liquidity Checks**: Handle "no liquidity" scenarios gracefully
+- **Volume Limits**: Respect 2% of balance limit per design
+
+### 3.4 Contract Error Handling
+
+#### 3.4.1 Error Code Integration
+- **Standard Errors**: Handle ProgramError::Custom(code) format
+- **Contract-Specific Codes**: 
+  - 1001: InvalidTokenPair
+  - 1002: InvalidRatio  
+  - 1003: InsufficientFunds
+  - 1004: InvalidTokenAccount
+  - 1005: InvalidSwapAmount
+  - 1006: RentExemptError
+  - 1007: PoolPaused
+  - 1012: Unauthorized
+  - 1019: ArithmeticOverflow
+  - 1023: SystemPaused
+  - 1024: SystemAlreadyPaused
+  - 1025: SystemNotPaused
+  - 1026: UnauthorizedAccess
+  - 1027: PoolSwapsPaused
+  - 1029: PoolSwapsAlreadyPaused
+  - 1030: PoolSwapsNotPaused
+  - And others per API documentation
+
+#### 3.4.2 Recovery Strategies
+- **Pause Handling**: Detect and wait for system/pool unpause
+- **Insufficient Funds**: Request airdrops or wait for token sharing
+- **Rate Limiting**: Respect contract's operational timing constraints
+- **Transaction Retries**: Implement exponential backoff for network issues
+
+### 3.5 Integration Testing & Validation
+
+#### 3.5.1 Contract Connectivity
+- **Health Checks**: Verify connection to Fixed Ratio Trading program
+- **System State**: Monitor contract's system pause status
+- **Pool Discovery**: Enumerate available pools for testing
+- **Account Validation**: Verify all derived accounts match contract expectations
+
+#### 3.5.2 Operation Validation
+- **Transaction Confirmation**: Wait for and validate transaction finality
+- **Balance Verification**: Confirm expected balance changes after operations
+- **LP Token Tracking**: Monitor LP token minting/burning
+- **Fee Deduction**: Verify proper fee payments to treasury
+
+**📖 Implementation Notes:**
+- All amount calculations must use basis points (multiply by 10^decimals)
+- Pool ratios must be anchored to 1 (one side = 10^decimals exactly)
+- Use `normalize_pool_config()` pattern to prevent 1.15 SOL mistakes
+- Refer to `C:\Users\Davinci\code\fixed-ratio-trading\docs\api\FIXED_RATIO_TRADING_API.md` for complete account structures and validation requirements
+- Test on localnet first with program ID `4aeVqtWhrUh6wpX8acNj2hpWXKEQwxjA3PYb2sHhNyCn`
+- For development outside LAN, use public ngrok endpoint: `https://fixed.ngrok.app`
+- For devnet testing, use program ID `9iqh69RqeG3RRrFBNZVoE77TMRvYboFUtC2sykaFVzB7`
+
+**⚠️ Important Function Name Corrections:**
+- Fee consolidation function is named `process_consolidate_pool_fees` (not `process_treasury_consolidate_fees`)
+- Use exact fee constants: `REGISTRATION_FEE`, `DEPOSIT_WITHDRAWAL_FEE`, `SWAP_CONTRACT_FEE`, `MIN_DONATION_AMOUNT`
+- Pool creation requires proper `normalize_pool_config()` implementation to prevent permanent 1.15+ SOL losses
 
 ---
 

@@ -20,14 +20,32 @@ public class ThreadController : ControllerBase
     [HttpPost("create")]
     public async Task<ActionResult<object>> CreateThread([FromBody] JsonRpcRequest request)
     {
-        // Phase 1 stub: no param parsing, create a default mock deposit thread
-        var threadId = await _threadManager.CreateThreadAsync(new ThreadConfig
+        // Phase 3: Create different thread types for testing
+        var random = new Random();
+        var threadTypes = Enum.GetValues<ThreadType>();
+        var tokenTypes = Enum.GetValues<TokenType>();
+        var swapDirections = Enum.GetValues<SwapDirection>();
+        
+        var threadType = threadTypes[random.Next(threadTypes.Length)];
+        var tokenType = tokenTypes[random.Next(tokenTypes.Length)];
+        
+        var config = new ThreadConfig
         {
-            ThreadType = ThreadType.Deposit,
-            PoolId = "mock_pool_1",
-            TokenType = TokenType.A,
-            InitialAmount = 1_000_000
-        });
+            ThreadType = threadType,
+            PoolId = "pool_1", // Use mock pool from transaction builder
+            TokenType = tokenType,
+            InitialAmount = (ulong)random.Next(100000, 10000000), // Random initial amount
+            AutoRefill = random.Next(0, 2) == 1,
+            ShareTokens = random.Next(0, 2) == 1
+        };
+        
+        // Set swap direction for swap threads
+        if (threadType == ThreadType.Swap)
+        {
+            config.SwapDirection = swapDirections[random.Next(swapDirections.Length)];
+        }
+        
+        var threadId = await _threadManager.CreateThreadAsync(config);
 
         return Ok(new JsonRpcResponse<object>
         {
@@ -39,12 +57,39 @@ public class ThreadController : ControllerBase
     [HttpPost("start")]
     public async Task<ActionResult<object>> StartThread([FromBody] JsonRpcRequest request)
     {
-        // Phase 1 stub: in real phase parse threadId from params
-        return Ok(new JsonRpcResponse<object>
+        try
         {
-            Error = new JsonRpcError { Code = -32602, Message = "Missing threadId in params (Phase 1 stub)" },
-            Id = request.Id
-        });
+            // TODO: Phase 3 - Parse threadId from JSON-RPC params properly
+            // For now, get the first available thread to start
+            var allThreads = await _threadManager.GetAllThreadsAsync();
+            var threadToStart = allThreads.FirstOrDefault(t => t.Status == ThreadStatus.Created);
+            
+            if (threadToStart == null)
+            {
+                return Ok(new JsonRpcResponse<object>
+                {
+                    Error = new JsonRpcError { Code = -32001, Message = "No threads available to start" },
+                    Id = request.Id
+                });
+            }
+            
+            await _threadManager.StartThreadAsync(threadToStart.ThreadId);
+            
+            return Ok(new JsonRpcResponse<object>
+            {
+                Result = new { threadId = threadToStart.ThreadId, status = "started" },
+                Id = request.Id
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error starting thread");
+            return Ok(new JsonRpcResponse<object>
+            {
+                Error = new JsonRpcError { Code = -32603, Message = ex.Message },
+                Id = request.Id
+            });
+        }
     }
 
     [HttpGet("status/{threadId}")]

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using FixedRatioStressTest.Common.Models;
 using FixedRatioStressTest.Core.Interfaces;
 using Microsoft.Extensions.Logging;
+using Solnet.Wallet;
 
 namespace FixedRatioStressTest.Core.Services;
 
@@ -9,15 +10,23 @@ public class ThreadManager : IThreadManager
 {
     private readonly IStorageService _storageService;
     private readonly ISolanaClientService _solanaClient;
+    private readonly ITransactionBuilderService _transactionBuilder;
     private readonly ILogger<ThreadManager> _logger;
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _runningThreads;
+    private readonly ConcurrentDictionary<string, Wallet> _walletCache;
 
-    public ThreadManager(IStorageService storageService, ISolanaClientService solanaClient, ILogger<ThreadManager> logger)
+    public ThreadManager(
+        IStorageService storageService, 
+        ISolanaClientService solanaClient,
+        ITransactionBuilderService transactionBuilder,
+        ILogger<ThreadManager> logger)
     {
         _storageService = storageService;
         _solanaClient = solanaClient;
+        _transactionBuilder = transactionBuilder;
         _logger = logger;
         _runningThreads = new ConcurrentDictionary<string, CancellationTokenSource>();
+        _walletCache = new ConcurrentDictionary<string, Wallet>();
     }
 
     public async Task<string> CreateThreadAsync(ThreadConfig config)
@@ -56,10 +65,23 @@ public class ThreadManager : IThreadManager
         }
 
         // Phase 2: Restore wallet and check initial balance
+        // Phase 3: Cache wallet for operations
         if (config.PrivateKey != null && config.PublicKey != null)
         {
             var wallet = _solanaClient.RestoreWallet(config.PrivateKey);
+            _walletCache[threadId] = wallet;
+            
             var solBalance = await _solanaClient.GetSolBalanceAsync(config.PublicKey);
+            
+            // Phase 3: Request airdrop if balance is low (devnet/localnet only)
+            if (solBalance < 100000000) // Less than 0.1 SOL
+            {
+                var airdropSuccess = await _transactionBuilder.RequestAirdropAsync(config.PublicKey, 1000000000); // 1 SOL
+                if (airdropSuccess)
+                {
+                    _logger.LogInformation("Requested SOL airdrop for thread {ThreadId}", threadId);
+                }
+            }
             
             _logger.LogInformation("Restored wallet for thread {ThreadId}: {PublicKey}, SOL balance: {Balance} lamports", 
                 threadId, config.PublicKey, solBalance);
@@ -68,7 +90,7 @@ public class ThreadManager : IThreadManager
         var cancellationToken = new CancellationTokenSource();
         _runningThreads[threadId] = cancellationToken;
 
-        _ = Task.Run(async () => await RunMockWorkerThread(config, cancellationToken.Token));
+        _ = Task.Run(async () => await RunWorkerThread(config, cancellationToken.Token));
 
         config.Status = ThreadStatus.Running;
         await _storageService.SaveThreadConfigAsync(threadId, config);
@@ -105,55 +127,71 @@ public class ThreadManager : IThreadManager
     public Task<ThreadStatistics> GetThreadStatisticsAsync(string threadId)
         => _storageService.LoadThreadStatisticsAsync(threadId);
 
-    private async Task RunMockWorkerThread(ThreadConfig config, CancellationToken cancellationToken)
+    private async Task RunWorkerThread(ThreadConfig config, CancellationToken cancellationToken)
     {
         var random = new Random();
+        var wallet = _walletCache.TryGetValue(config.ThreadId, out var cachedWallet) ? cachedWallet : null;
+
+        if (wallet == null)
+        {
+            _logger.LogError("No wallet found for thread {ThreadId}", config.ThreadId);
+            return;
+        }
+
+        _logger.LogInformation("Starting {ThreadType} worker thread {ThreadId} for pool {PoolId}", 
+            config.ThreadType, config.ThreadId, config.PoolId);
 
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                // Phase 2: Add basic Solana operations
-                var operationType = "mock_operation";
-                
-                if (config.PublicKey != null)
+                var operationType = "unknown";
+                var operationSuccess = false;
+                var volumeProcessed = 0ul;
+
+                // Phase 3: Implement actual blockchain operations based on thread type
+                switch (config.ThreadType)
                 {
-                    // Check SOL balance periodically
-                    var solBalance = await _solanaClient.GetSolBalanceAsync(config.PublicKey);
-                    _logger.LogDebug("Thread {ThreadId} SOL balance: {Balance} lamports", config.ThreadId, solBalance);
-                    
-                    // Check connection health
-                    var isHealthy = await _solanaClient.IsHealthyAsync();
-                    if (!isHealthy)
-                    {
-                        _logger.LogWarning("Solana connection unhealthy for thread {ThreadId}", config.ThreadId);
-                    }
-                    
-                    operationType = config.ThreadType switch
-                    {
-                        ThreadType.Deposit => "balance_check_deposit",
-                        ThreadType.Withdrawal => "balance_check_withdrawal", 
-                        ThreadType.Swap => "balance_check_swap",
-                        _ => "balance_check"
-                    };
+                    case ThreadType.Deposit:
+                        (operationType, operationSuccess, volumeProcessed) = await HandleDepositOperation(config, wallet, random);
+                        break;
+                        
+                    case ThreadType.Withdrawal:
+                        (operationType, operationSuccess, volumeProcessed) = await HandleWithdrawalOperation(config, wallet, random);
+                        break;
+                        
+                    case ThreadType.Swap:
+                        (operationType, operationSuccess, volumeProcessed) = await HandleSwapOperation(config, wallet, random);
+                        break;
+                        
+                    default:
+                        _logger.LogWarning("Unknown thread type {ThreadType} for thread {ThreadId}", 
+                            config.ThreadType, config.ThreadId);
+                        break;
                 }
 
-                // TODO: Phase 3 - Add actual blockchain operations
-                // TODO: Phase 3 - Add token balance checking  
-                // TODO: Phase 4 - Add deposit/withdrawal/swap logic
-
+                // Update statistics
                 var statistics = await _storageService.LoadThreadStatisticsAsync(config.ThreadId);
-                statistics.SuccessfulOperations++;
-                statistics.TotalVolumeProcessed += (ulong)random.Next(1000, 10000);
+                
+                if (operationSuccess)
+                {
+                    statistics.SuccessfulOperations++;
+                    statistics.TotalVolumeProcessed += volumeProcessed;
+                }
+                else
+                {
+                    statistics.FailedOperations++;
+                }
+                
                 statistics.LastOperationAt = DateTime.UtcNow;
-
                 await _storageService.SaveThreadStatisticsAsync(config.ThreadId, statistics);
 
-                // Random delay between operations
+                // Random delay between operations (750-2000ms as per design)
                 await Task.Delay(random.Next(750, 2000), cancellationToken);
             }
             catch (OperationCanceledException)
             {
+                _logger.LogInformation("Thread {ThreadId} operation cancelled", config.ThreadId);
                 break;
             }
             catch (Exception ex)
@@ -169,9 +207,119 @@ public class ThreadManager : IThreadManager
 
                 await _storageService.AddThreadErrorAsync(config.ThreadId, error);
 
-                // Wait before retrying
+                // Wait before retrying on unexpected errors
                 await Task.Delay(5000, cancellationToken);
             }
+        }
+
+        _logger.LogInformation("Worker thread {ThreadId} completed", config.ThreadId);
+    }
+
+    private async Task<(string operationType, bool success, ulong volume)> HandleDepositOperation(
+        ThreadConfig config, Wallet wallet, Random random)
+    {
+        try
+        {
+            // Phase 3: Implement deposit logic
+            _logger.LogDebug("Executing deposit operation for thread {ThreadId}", config.ThreadId);
+
+            // Check token balance first
+            var solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
+            if (solBalance < 1000000) // Less than 0.001 SOL for fees
+            {
+                _logger.LogWarning("Insufficient SOL balance for deposit operation in thread {ThreadId}", config.ThreadId);
+                return ("deposit_insufficient_balance", false, 0);
+            }
+
+            // Calculate random deposit amount (1 basis point to 5% of balance as per design)
+            var depositAmount = (ulong)random.Next(1000, Math.Max(1001, (int)(solBalance * 0.05)));
+            
+            // Submit deposit transaction
+            var signature = await _transactionBuilder.SubmitDepositTransactionAsync(
+                wallet, config.PoolId, config.TokenType, depositAmount);
+
+            _logger.LogInformation("Deposit completed for thread {ThreadId}: {Amount} lamports, signature: {Signature}", 
+                config.ThreadId, depositAmount, signature);
+
+            return ("deposit", true, depositAmount);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Deposit operation failed for thread {ThreadId}", config.ThreadId);
+            return ("deposit_failed", false, 0);
+        }
+    }
+
+    private async Task<(string operationType, bool success, ulong volume)> HandleWithdrawalOperation(
+        ThreadConfig config, Wallet wallet, Random random)
+    {
+        try
+        {
+            // Phase 3: Implement withdrawal logic
+            _logger.LogDebug("Executing withdrawal operation for thread {ThreadId}", config.ThreadId);
+
+            // TODO: Check LP token balance
+            // For now, simulate checking if we have LP tokens to withdraw
+            var hasLpTokens = random.Next(1, 100) > 30; // 70% chance of having LP tokens
+            
+            if (!hasLpTokens)
+            {
+                _logger.LogDebug("No LP tokens available for withdrawal in thread {ThreadId}, waiting...", config.ThreadId);
+                return ("withdrawal_waiting", false, 0);
+            }
+
+            // Calculate withdrawal amount (mock for now)
+            var lpTokenAmount = (ulong)random.Next(1000, 10000);
+            
+            // Submit withdrawal transaction
+            var signature = await _transactionBuilder.SubmitWithdrawalTransactionAsync(
+                wallet, config.PoolId, config.TokenType, lpTokenAmount);
+
+            _logger.LogInformation("Withdrawal completed for thread {ThreadId}: {Amount} LP tokens, signature: {Signature}", 
+                config.ThreadId, lpTokenAmount, signature);
+
+            return ("withdrawal", true, lpTokenAmount);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Withdrawal operation failed for thread {ThreadId}", config.ThreadId);
+            return ("withdrawal_failed", false, 0);
+        }
+    }
+
+    private async Task<(string operationType, bool success, ulong volume)> HandleSwapOperation(
+        ThreadConfig config, Wallet wallet, Random random)
+    {
+        try
+        {
+            // Phase 3: Implement swap logic
+            _logger.LogDebug("Executing swap operation for thread {ThreadId}", config.ThreadId);
+
+            // Check balance for input token
+            var solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
+            if (solBalance < 1000000) // Less than 0.001 SOL for fees
+            {
+                _logger.LogWarning("Insufficient balance for swap operation in thread {ThreadId}", config.ThreadId);
+                return ("swap_insufficient_balance", false, 0);
+            }
+
+            // Calculate swap amount (up to 2% of balance as per design)
+            var swapAmount = (ulong)random.Next(1000, Math.Max(1001, (int)(solBalance * 0.02)));
+            var minimumOutput = swapAmount * 95 / 100; // 5% slippage tolerance
+            
+            // Submit swap transaction
+            var signature = await _transactionBuilder.SubmitSwapTransactionAsync(
+                wallet, config.PoolId, config.SwapDirection ?? SwapDirection.AToB, swapAmount, minimumOutput);
+
+            _logger.LogInformation("Swap completed for thread {ThreadId}: {Amount} input, direction: {Direction}, signature: {Signature}", 
+                config.ThreadId, swapAmount, config.SwapDirection, signature);
+
+            return ("swap", true, swapAmount);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Swap operation failed for thread {ThreadId}", config.ThreadId);
+            return ("swap_failed", false, 0);
         }
     }
 }

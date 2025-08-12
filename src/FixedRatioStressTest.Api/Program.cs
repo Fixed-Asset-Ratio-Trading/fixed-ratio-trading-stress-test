@@ -12,6 +12,7 @@ builder.Services.AddSwaggerGen();
 // App services  
 builder.Services.AddSingleton<IStorageService, JsonFileStorageService>();
 builder.Services.AddSingleton<ISolanaClientService, SolanaClientService>();
+builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
 builder.Services.AddSingleton<IThreadManager, ThreadManager>();
 
 var app = builder.Build();
