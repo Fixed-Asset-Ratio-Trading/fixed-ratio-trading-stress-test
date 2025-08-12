@@ -9,8 +9,9 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// App services
+// App services  
 builder.Services.AddSingleton<IStorageService, JsonFileStorageService>();
+builder.Services.AddSingleton<ISolanaClientService, SolanaClientService>();
 builder.Services.AddSingleton<IThreadManager, ThreadManager>();
 
 var app = builder.Build();

@@ -50,9 +50,43 @@ public class ThreadController : ControllerBase
     [HttpGet("status/{threadId}")]
     public async Task<ActionResult<object>> GetThreadStatus(string threadId)
     {
-        var config = await _threadManager.GetThreadConfigAsync(threadId);
-        var stats = await _threadManager.GetThreadStatisticsAsync(threadId);
-        return Ok(new { config, statistics = stats });
+        try
+        {
+            var config = await _threadManager.GetThreadConfigAsync(threadId);
+            var statistics = await _threadManager.GetThreadStatisticsAsync(threadId);
+            
+            // Create response object with masked private key for security
+            var response = new
+            {
+                config = new
+                {
+                    config.ThreadId,
+                    config.ThreadType,
+                    config.PoolId,
+                    config.TokenType,
+                    config.SwapDirection,
+                    config.InitialAmount,
+                    config.AutoRefill,
+                    config.ShareTokens,
+                    config.Status,
+                    config.CreatedAt,
+                    config.LastOperationAt,
+                    config.PublicKey,
+                    HasWallet = !string.IsNullOrEmpty(config.PublicKey),
+                    // Never expose private key or mnemonic in API response
+                    PrivateKeySet = config.PrivateKey != null && config.PrivateKey.Length > 0,
+                    MnemonicSet = !string.IsNullOrEmpty(config.WalletMnemonic)
+                },
+                statistics
+            };
+            
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting thread status");
+            return NotFound();
+        }
     }
 
     [HttpGet("all")]

@@ -13,5 +13,10 @@ public class ThreadConfig
     public ThreadStatus Status { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? LastOperationAt { get; set; }
+    
+    // Phase 2: Solana wallet information
+    public string? PublicKey { get; set; }
+    public byte[]? PrivateKey { get; set; }  // Store encrypted in production
+    public string? WalletMnemonic { get; set; }  // Store encrypted in production
 }
 
