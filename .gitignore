@@ -1,0 +1,33 @@
+# Build artifacts
+**/bin/
+**/obj/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs and temp
+*.log
+*.tmp
+*.temp
+
+# IDE
+.vs/
+.idea/
+*.swp
+
+# Packages
+packages/
+*.nupkg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test results
+TestResult*/
+*.trx
+
+
