@@ -39,7 +39,7 @@ public class ThreadManager : IThreadManager
         var wallet = _solanaClient.GenerateWallet();
         config.PublicKey = wallet.Account.PublicKey.Key;
         config.PrivateKey = wallet.Account.PrivateKey.KeyBytes;
-        config.WalletMnemonic = wallet.Mnemonic.ToString();
+        config.WalletMnemonic = wallet.Mnemonic?.ToString() ?? ""; // Handle null mnemonic gracefully
 
         _logger.LogInformation("Generated wallet for thread {ThreadId}: {PublicKey}", 
             config.ThreadId, config.PublicKey);
