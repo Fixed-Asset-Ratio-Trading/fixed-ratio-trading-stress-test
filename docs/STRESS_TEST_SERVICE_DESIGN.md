@@ -170,22 +170,22 @@ The "empty" command enables controlled extreme scenarios by forcing threads to c
 ### 1.2 Technology Stack
 - **Language:** C# .NET 8.0 (for high-performance concurrent operations and Windows optimization)
 - **RPC Framework:** ASP.NET Core Web API with JSON-RPC endpoint (remotely accessible)
-- **Threading:** TPL (Task Parallel Library) with custom ThreadPool optimized for 128 cores
+- **Threading:** TPL (Task Parallel Library) with custom ThreadPool optimized for 32 cores
 - **Storage:** JSON files for thread state persistence with System.Text.Json
 - **Solana Integration:** Solnet library for .NET Solana blockchain interaction
-- **Platform:** Windows Server with 128-core AMD Threadripper optimization
+- **Platform:** Windows Server with 32-core AMD Threadripper optimization
 
 ---
 
-## 2. High-Performance Threading Architecture for 128-Core Systems
+## 2. High-Performance Threading Architecture for 32-Core Systems
 
 ### 2.1 AMD Threadripper Optimization Strategy
 
-The stress testing service is specifically designed to leverage the full potential of a 128-core AMD Threadripper processor on Windows, implementing advanced threading strategies that maximize core utilization while maintaining optimal blockchain interaction patterns.
+The stress testing service is specifically designed to leverage the full potential of a 32-core AMD Threadripper processor on Windows, implementing advanced threading strategies that maximize core utilization while maintaining optimal blockchain interaction patterns.
 
 #### **Core Allocation Strategy**
-- **Reserved Cores**: 8 cores (6.25%) reserved for system operations and RPC handling
-- **Worker Cores**: 120 cores (93.75%) dedicated to blockchain operations
+- **Reserved Cores**: 4 cores (12.5%) reserved for system operations and RPC handling
+- **Worker Cores**: 28 cores (87.5%) dedicated to blockchain operations
 - **NUMA Optimization**: Thread affinity aligned with NUMA nodes for optimal memory access patterns
 - **Hyperthreading Awareness**: Logical cores managed to prevent resource contention
 
@@ -193,11 +193,11 @@ The stress testing service is specifically designed to leverage the full potenti
 ```csharp
 public class ThreadripperOptimizedThreadPool
 {
-    // Configuration optimized for 128-core Threadripper
-    private const int RESERVED_CORES = 8;
-    private const int WORKER_CORES = 120;
+    // Configuration optimized for 32-core Threadripper
+    private const int RESERVED_CORES = 4;
+    private const int WORKER_CORES = 28;
     private const int MAX_THREADS_PER_CORE = 4;  // Optimal for I/O-bound blockchain operations
-    private const int TOTAL_WORKER_THREADS = WORKER_CORES * MAX_THREADS_PER_CORE; // 480 threads
+    private const int TOTAL_WORKER_THREADS = WORKER_CORES * MAX_THREADS_PER_CORE; // 112 threads
     
     // NUMA-aware thread allocation
     private readonly NumaNodeThreadManager[] _numaManagers;
@@ -251,7 +251,7 @@ public class NumaOptimizedWorkerThread
 ```
 
 #### **I/O Optimization for Blockchain Operations**
-- **Connection Pooling**: 128 persistent RPC connections to Solana cluster
+- **Connection Pooling**: 32 persistent RPC connections to Solana cluster
 - **Async/Await Scaling**: Non-blocking I/O operations across all cores
 - **Batch Processing**: Intelligent transaction batching to maximize network utilization
 - **Load Balancing**: RPC endpoint rotation to distribute network load
@@ -1755,7 +1755,7 @@ public class ThreadPoolManager
         // Record start time and reason
         await _storage.RecordSessionStartAsync(threadId, DateTime.UtcNow, "manual_start");
         
-        // Spawn worker task using TPL optimized for 128 cores
+        // Spawn worker task using TPL optimized for 32 cores
         var cancellationToken = new CancellationTokenSource();
         var task = Task.Run(async () => await ExecuteWorkerThreadAsync(config, keypair, cancellationToken.Token));
         
@@ -2043,16 +2043,16 @@ impl DepositWorker {
 
 ---
 
-## 7. Windows & 128-Core Performance Considerations
+## 7. Windows & 32-Core Performance Considerations
 
 ### 7.1 High-Core Concurrency Design for Windows
 - **Task Parallel Library (TPL)**: Optimized async/await patterns for I/O-bound blockchain operations
 - **Concurrent Collections**: Thread-safe data structures designed for high-core contention scenarios
-- **Connection Pooling**: 128 persistent HTTP/WebSocket connections to Solana RPC endpoints
-- **Batch Processing**: Intelligent transaction batching to maximize 128-core throughput
+- **Connection Pooling**: 32 persistent HTTP/WebSocket connections to Solana RPC endpoints
+- **Batch Processing**: Intelligent transaction batching to maximize 32-core throughput
 
 ```csharp
-// Example of 128-core optimized connection pool
+// Example of 32-core optimized connection pool
 public class ThreadripperSolanaConnectionPool
 {
     private readonly ConcurrentQueue<HttpClient> _connectionPool;
@@ -2060,13 +2060,13 @@ public class ThreadripperSolanaConnectionPool
     
     public ThreadripperSolanaConnectionPool()
     {
-        // Create 128 connections for optimal core utilization
-        var connections = Enumerable.Range(0, 128)
+        // Create 32 connections for optimal core utilization
+        var connections = Enumerable.Range(0, 32)
             .Select(_ => CreateOptimizedHttpClient())
             .ToArray();
             
         _connectionPool = new ConcurrentQueue<HttpClient>(connections);
-        _connectionSemaphore = new SemaphoreSlim(128, 128);
+        _connectionSemaphore = new SemaphoreSlim(32, 32);
     }
     
     private HttpClient CreateOptimizedHttpClient()
@@ -2088,7 +2088,7 @@ public class ThreadripperSolanaConnectionPool
 - **NUMA-Aware Memory Allocation**: Leverage Windows NUMA APIs for optimal memory placement
 - **Large Page Support**: Configure application for 2MB pages to reduce TLB misses
 - **Process Priority**: High priority class for sustained high-throughput operations
-- **Garbage Collection Tuning**: Server GC with concurrent collection optimized for 128-core systems
+- **Garbage Collection Tuning**: Server GC with concurrent collection optimized for 32-core systems
 
 ```csharp
 // Windows-specific performance optimizations
@@ -2102,9 +2102,9 @@ public static class WindowsPerformanceOptimizer
         // Set process priority for maximum performance
         Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High;
         
-        // Configure ThreadPool for 128-core utilization
-        ThreadPool.SetMinThreads(480, 480);
-        ThreadPool.SetMaxThreads(480, 480);
+        // Configure ThreadPool for 32-core utilization
+        ThreadPool.SetMinThreads(112, 112);
+        ThreadPool.SetMaxThreads(112, 112);
         
         // Enable large pages if available
         if (IsLargePagesSupported())
@@ -2121,8 +2121,8 @@ public static class WindowsPerformanceOptimizer
     
     private static void SetOptimalProcessorAffinity()
     {
-        // Reserve cores 0-7 for system, use 8-127 for workers
-        var affinityMask = (UIntPtr)(Math.Pow(2, 128) - 1 - 255);
+        // Reserve cores 0-3 for system, use 4-31 for workers
+        var affinityMask = (UIntPtr)(Math.Pow(2, 32) - 1 - 15);
         SetProcessAffinityMask(Process.GetCurrentProcess().Handle, affinityMask);
     }
 }
@@ -2147,7 +2147,7 @@ public class HighPerformanceObjectPool<T> where T : class, new()
         _maxObjects = maxObjects;
         _objectGenerator = () => new T();
         
-        // Pre-warm the pool for 128-core systems
+        // Pre-warm the pool for 32-core systems
         Parallel.For(0, Math.Min(maxObjects, Environment.ProcessorCount * 8), _ =>
         {
             _objects.Add(_objectGenerator());
@@ -2163,7 +2163,7 @@ public class HighPerformanceObjectPool<T> where T : class, new()
 - **DNS Caching**: Reduce RPC endpoint resolution overhead
 - **Connection Keep-Alive**: Persistent connections with optimal timeout settings
 
-### 7.5 Monitoring and Metrics for 128-Core Systems
+### 7.5 Monitoring and Metrics for 32-Core Systems
 - **Per-Core CPU Utilization**: Real-time monitoring of individual core usage
 - **NUMA Node Performance**: Track memory access patterns across NUMA domains
 - **Transaction Throughput by Core**: Identify bottlenecks in core utilization
@@ -2178,7 +2178,7 @@ public class ThreadripperPerformanceMonitor
     
     public ThreadripperPerformanceMonitor()
     {
-        // Create performance counters for all 128 cores
+        // Create performance counters for all 32 cores
         _cpuCounters = Enumerable.Range(0, Environment.ProcessorCount)
             .Select(i => new PerformanceCounter("Processor", "% Processor Time", i.ToString()))
             .ToArray();
@@ -2241,10 +2241,10 @@ public class ThreadripperPerformanceMonitor
     "TimeoutMs": 30000
   },
   "ThreadingConfiguration": {
-    "ReservedCores": 8,
-    "WorkerCores": 120,
+    "ReservedCores": 4,
+    "WorkerCores": 28,
     "MaxThreadsPerCore": 4,
-    "TotalWorkerThreads": 480,
+    "TotalWorkerThreads": 112,
     "SolThreshold": 1000000000,
     "ErrorHistoryLimit": 10,
     "EnableNumaOptimization": true
@@ -2331,9 +2331,9 @@ public class Program
             options.ServiceName = "Fixed Ratio Stress Test Service";
         });
         
-        // Configure high-performance thread pool for 128 cores
-        ThreadPool.SetMinThreads(480, 480);
-        ThreadPool.SetMaxThreads(480, 480);
+        // Configure high-performance thread pool for 32 cores
+        ThreadPool.SetMinThreads(112, 112);
+        ThreadPool.SetMaxThreads(112, 112);
         
         // Configure process priority for maximum performance
         Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High;
@@ -2362,12 +2362,12 @@ public class Program
 
 #### **NUMA and CPU Affinity Setup**
 ```powershell
-# Configure processor affinity for optimal 128-core utilization
-# Reserve cores 0-7 for system operations, use cores 8-127 for workers
+# Configure processor affinity for optimal 32-core utilization
+# Reserve cores 0-3 for system operations, use cores 4-31 for workers
 
-# Set process affinity (example for 128-core system)
+# Set process affinity (example for 32-core system)
 $ProcessId = Get-Process -Name "FixedRatioStressTest" | Select-Object -ExpandProperty Id
-$AffinityMask = [math]::Pow(2, 128) - 1 - 255  # All cores except 0-7
+$AffinityMask = [math]::Pow(2, 32) - 1 - 15  # All cores except 0-3
 [System.Diagnostics.Process]::GetProcessById($ProcessId).ProcessorAffinity = $AffinityMask
 ```
 

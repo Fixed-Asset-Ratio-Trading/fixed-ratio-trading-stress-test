@@ -15,7 +15,7 @@ This document outlines the phased approach to building the Fixed Ratio Trading S
 - **Local Development:** All development and testing done locally
 - **Phased Approach:** One testable feature at a time
 - **Incremental Testing:** Each phase is fully testable before proceeding
-- **Remote Deployment:** Final deployment will be on the 128-core Threadripper system
+- **Remote Deployment:** Final deployment will be on the 32-core Threadripper system
 
 ---
 
@@ -862,7 +862,7 @@ public async Task<string> SubmitSwapTransactionAsync(
 ## 📊 Phase 4: Advanced Features
 
 ### 4.1 Performance Optimization
-- Implement 128-core thread pool optimization
+- Implement 32-core thread pool optimization
 - Add NUMA-aware memory allocation
 - Implement object pooling
 
