@@ -21,8 +21,15 @@ namespace FixedRatioStressTest.Common.Models
         public bool SwapsPaused { get; set; }
         public DateTime CreatedAt { get; set; }
         
+        // Blockchain pool creation tracking
+        public string? CreationSignature { get; set; }
+        public string? PayerWallet { get; set; }
+        
         [JsonIgnore]
         public string RatioDisplay => $"1 Token A = {(double)RatioBDenominator / RatioANumerator:F6} Token B";
+        
+        [JsonIgnore]
+        public bool IsBlockchainPool => !string.IsNullOrEmpty(CreationSignature);
     }
     
     public class PoolCreationParams

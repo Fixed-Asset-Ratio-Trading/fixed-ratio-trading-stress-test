@@ -31,6 +31,22 @@ public class ThreadManager : IThreadManager
 
     public async Task<string> CreateThreadAsync(ThreadConfig config)
     {
+        // CRITICAL FIX: Validate pool exists before creating thread
+        if (string.IsNullOrEmpty(config.PoolId))
+        {
+            throw new InvalidOperationException("PoolId is required when creating a thread");
+        }
+
+        try
+        {
+            var poolState = await _solanaClient.GetPoolStateAsync(config.PoolId);
+            _logger.LogInformation("Validated pool {PoolId} exists for thread creation", config.PoolId);
+        }
+        catch (KeyNotFoundException)
+        {
+            throw new InvalidOperationException($"Pool {config.PoolId} does not exist. Cannot create thread without a valid pool.");
+        }
+
         config.ThreadId = $"{config.ThreadType.ToString().ToLower()}_{Guid.NewGuid():N}";
         config.CreatedAt = DateTime.UtcNow;
         config.Status = ThreadStatus.Created;
@@ -41,16 +57,16 @@ public class ThreadManager : IThreadManager
         config.PrivateKey = wallet.Account.PrivateKey.KeyBytes;
         config.WalletMnemonic = wallet.Mnemonic?.ToString() ?? ""; // Handle null mnemonic gracefully
 
-        _logger.LogInformation("Generated wallet for thread {ThreadId}: {PublicKey}", 
-            config.ThreadId, config.PublicKey);
+        _logger.LogInformation("Generated wallet for thread {ThreadId}: {PublicKey} for pool {PoolId}", 
+            config.ThreadId, config.PublicKey, config.PoolId);
 
         await _storageService.SaveThreadConfigAsync(config.ThreadId, config);
 
         var statistics = new ThreadStatistics();
         await _storageService.SaveThreadStatisticsAsync(config.ThreadId, statistics);
 
-        _logger.LogInformation("Created thread {ThreadId} of type {ThreadType}",
-            config.ThreadId, config.ThreadType);
+        _logger.LogInformation("Created thread {ThreadId} of type {ThreadType} for pool {PoolId}",
+            config.ThreadId, config.ThreadType, config.PoolId);
 
         return config.ThreadId;
     }

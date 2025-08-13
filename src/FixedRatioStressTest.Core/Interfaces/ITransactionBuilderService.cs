@@ -17,7 +17,7 @@ public interface ITransactionBuilderService
     /// </summary>
     Task<byte[]> BuildDepositTransactionAsync(
         Wallet wallet,
-        string poolId,
+        PoolState poolState,
         TokenType tokenType,
         ulong amountInBasisPoints);
     
@@ -26,7 +26,7 @@ public interface ITransactionBuilderService
     /// </summary>
     Task<byte[]> BuildWithdrawalTransactionAsync(
         Wallet wallet,
-        string poolId,
+        PoolState poolState,
         TokenType tokenType,
         ulong lpTokenAmountToBurn);
     
@@ -35,7 +35,7 @@ public interface ITransactionBuilderService
     /// </summary>
     Task<byte[]> BuildSwapTransactionAsync(
         Wallet wallet,
-        string poolId,
+        PoolState poolState,
         SwapDirection direction,
         ulong inputAmountBasisPoints,
         ulong minimumOutputBasisPoints);

@@ -19,7 +19,6 @@ namespace FixedRatioStressTest.Infrastructure.Services
     /// </summary>
 public class TransactionBuilderService : ITransactionBuilderService
 {
-        private readonly ISolanaClientService _solanaClient;
         private readonly IComputeUnitManager _computeUnitManager;
         private readonly ILogger<TransactionBuilderService> _logger;
         private readonly SolanaConfig _config;
@@ -27,17 +26,17 @@ public class TransactionBuilderService : ITransactionBuilderService
         
         public TransactionBuilderService(
             IConfiguration configuration,
-            ISolanaClientService solanaClient,
             IComputeUnitManager computeUnitManager,
             ILogger<TransactionBuilderService> logger)
         {
-            _solanaClient = solanaClient;
             _computeUnitManager = computeUnitManager;
             _logger = logger;
             _config = configuration.GetSection("SolanaConfiguration").Get<SolanaConfig>() ?? new SolanaConfig();
             
             var rpcUrl = _config.GetActiveRpcUrl();
             _rpcClient = ClientFactory.GetClient(rpcUrl);
+            
+            // Remove circular dependency - we'll pass required data as parameters instead
         }
         
         public async Task<byte[]> BuildCreatePoolTransactionAsync(
@@ -127,7 +126,7 @@ public class TransactionBuilderService : ITransactionBuilderService
         
         public async Task<byte[]> BuildDepositTransactionAsync(
         Wallet wallet, 
-        string poolId, 
+        PoolState poolState, 
         TokenType tokenType, 
             ulong amountInBasisPoints)
     {
@@ -135,13 +134,13 @@ public class TransactionBuilderService : ITransactionBuilderService
         {
                 _logger.LogInformation("Building deposit transaction for {Amount} basis points", amountInBasisPoints);
                 
-                var pool = await _solanaClient.GetPoolStateAsync(poolId);
+                // Pool state will be passed as parameter to avoid circular dependency
                 var programId = new PublicKey(_config.ProgramId);
                 
                 // Determine token mint based on type
-                var tokenMint = tokenType == TokenType.A ? pool.TokenAMint : pool.TokenBMint;
-                var vault = tokenType == TokenType.A ? pool.VaultA : pool.VaultB;
-                var lpMint = tokenType == TokenType.A ? pool.LpMintA : pool.LpMintB;
+                var tokenMint = tokenType == TokenType.A ? poolState.TokenAMint : poolState.TokenBMint;
+                var vault = tokenType == TokenType.A ? poolState.VaultA : poolState.VaultB;
+                var lpMint = tokenType == TokenType.A ? poolState.LpMintA : poolState.LpMintB;
                 
                 // Get or create associated token accounts
                 var userTokenAccount = await GetOrCreateAssociatedTokenAccountAsync(wallet, tokenMint);
@@ -159,7 +158,7 @@ public class TransactionBuilderService : ITransactionBuilderService
                     // [3] System State PDA
                     AccountMeta.ReadOnly(DeriveSystemStatePda(), false),
                     // [4] Pool State PDA
-                    AccountMeta.ReadOnly(new PublicKey(poolId), false),
+                    AccountMeta.ReadOnly(new PublicKey(poolState.PoolId), false),
                     // [5] Deposit token mint (A or B)
                     AccountMeta.ReadOnly(new PublicKey(tokenMint), false),
                     // [6] Appropriate vault PDA (writable)
@@ -171,9 +170,9 @@ public class TransactionBuilderService : ITransactionBuilderService
                     // [9] User's LP token account (writable)
                     AccountMeta.Writable(new PublicKey(userLpTokenAccount), false),
                     // [10] Main Treasury PDA (writable)
-                    AccountMeta.Writable(new PublicKey(pool.MainTreasury), false),
+                    AccountMeta.Writable(new PublicKey(poolState.MainTreasury), false),
                     // [11] Pool Treasury PDA (writable)
-                    AccountMeta.Writable(new PublicKey(pool.PoolTreasury), false)
+                    AccountMeta.Writable(new PublicKey(poolState.PoolTreasury), false)
                 };
                 
                 // Create instruction data
@@ -212,7 +211,7 @@ public class TransactionBuilderService : ITransactionBuilderService
 
         public async Task<byte[]> BuildWithdrawalTransactionAsync(
         Wallet wallet, 
-        string poolId, 
+        PoolState poolState, 
         TokenType tokenType, 
             ulong lpTokenAmountToBurn)
     {
@@ -220,13 +219,13 @@ public class TransactionBuilderService : ITransactionBuilderService
         {
                 _logger.LogInformation("Building withdrawal transaction for {Amount} LP tokens", lpTokenAmountToBurn);
                 
-                var pool = await _solanaClient.GetPoolStateAsync(poolId);
+                // Pool state will be passed as parameter to avoid circular dependency
                 var programId = new PublicKey(_config.ProgramId);
                 
                 // Determine token mint based on type
-                var tokenMint = tokenType == TokenType.A ? pool.TokenAMint : pool.TokenBMint;
-                var vault = tokenType == TokenType.A ? pool.VaultA : pool.VaultB;
-                var lpMint = tokenType == TokenType.A ? pool.LpMintA : pool.LpMintB;
+                var tokenMint = tokenType == TokenType.A ? poolState.TokenAMint : poolState.TokenBMint;
+                var vault = tokenType == TokenType.A ? poolState.VaultA : poolState.VaultB;
+                var lpMint = tokenType == TokenType.A ? poolState.LpMintA : poolState.LpMintB;
                 
                 // Get associated token accounts
                 var userTokenAccount = await GetOrCreateAssociatedTokenAccountAsync(wallet, tokenMint);
@@ -244,7 +243,7 @@ public class TransactionBuilderService : ITransactionBuilderService
                     // [3] System State PDA
                     AccountMeta.ReadOnly(DeriveSystemStatePda(), false),
                     // [4] Pool State PDA (writable)
-                    AccountMeta.Writable(new PublicKey(poolId), false),
+                    AccountMeta.Writable(new PublicKey(poolState.PoolId), false),
                     // [5] Withdrawal token mint (A or B)
                     AccountMeta.ReadOnly(new PublicKey(tokenMint), false),
                     // [6] Appropriate vault PDA (writable)
@@ -256,9 +255,9 @@ public class TransactionBuilderService : ITransactionBuilderService
                     // [9] User's LP token account (writable)
                     AccountMeta.Writable(new PublicKey(userLpTokenAccount), false),
                     // [10] Main Treasury PDA (writable)
-                    AccountMeta.Writable(new PublicKey(pool.MainTreasury), false),
+                    AccountMeta.Writable(new PublicKey(poolState.MainTreasury), false),
                     // [11] Pool Treasury PDA (writable)
-                    AccountMeta.Writable(new PublicKey(pool.PoolTreasury), false)
+                    AccountMeta.Writable(new PublicKey(poolState.PoolTreasury), false)
                 };
                 
                 // Create instruction data
@@ -297,7 +296,7 @@ public class TransactionBuilderService : ITransactionBuilderService
 
         public async Task<byte[]> BuildSwapTransactionAsync(
         Wallet wallet, 
-        string poolId, 
+        PoolState poolState, 
         SwapDirection direction, 
             ulong inputAmountBasisPoints,
             ulong minimumOutputBasisPoints)
@@ -307,13 +306,13 @@ public class TransactionBuilderService : ITransactionBuilderService
                 _logger.LogInformation("Building swap transaction: {Direction} {Amount} basis points", 
                     direction, inputAmountBasisPoints);
                 
-                var pool = await _solanaClient.GetPoolStateAsync(poolId);
+                // Pool state will be passed as parameter to avoid circular dependency
                 var programId = new PublicKey(_config.ProgramId);
                 
                 // Determine input and output mints based on direction
                 var (inputMint, outputMint, inputVault, outputVault) = direction == SwapDirection.AToB ?
-                    (pool.TokenAMint, pool.TokenBMint, pool.VaultA, pool.VaultB) :
-                    (pool.TokenBMint, pool.TokenAMint, pool.VaultB, pool.VaultA);
+                    (poolState.TokenAMint, poolState.TokenBMint, poolState.VaultA, poolState.VaultB) :
+                    (poolState.TokenBMint, poolState.TokenAMint, poolState.VaultB, poolState.VaultA);
                 
                 // Get associated token accounts
                 var userInputAccount = await GetOrCreateAssociatedTokenAccountAsync(wallet, inputMint);
@@ -331,7 +330,7 @@ public class TransactionBuilderService : ITransactionBuilderService
                     // [3] System State PDA
                     AccountMeta.ReadOnly(DeriveSystemStatePda(), false),
                     // [4] Pool State PDA
-                    AccountMeta.ReadOnly(new PublicKey(poolId), false),
+                    AccountMeta.ReadOnly(new PublicKey(poolState.PoolId), false),
                     // [5] User's input token account (writable)
                     AccountMeta.Writable(new PublicKey(userInputAccount), false),
                     // [6] User's output token account (writable)
@@ -341,9 +340,9 @@ public class TransactionBuilderService : ITransactionBuilderService
                     // [8] Output vault PDA (writable)
                     AccountMeta.Writable(new PublicKey(outputVault), false),
                     // [9] Main Treasury PDA (writable)
-                    AccountMeta.Writable(new PublicKey(pool.MainTreasury), false),
+                    AccountMeta.Writable(new PublicKey(poolState.MainTreasury), false),
                     // [10] Pool Treasury PDA (writable)
-                    AccountMeta.Writable(new PublicKey(pool.PoolTreasury), false)
+                    AccountMeta.Writable(new PublicKey(poolState.PoolTreasury), false)
                 };
                 
                 // Create instruction data

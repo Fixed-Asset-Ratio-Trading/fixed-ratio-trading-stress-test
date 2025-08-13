@@ -79,7 +79,8 @@ public class TestHelper : IDisposable
     }
     
     /// <summary>
-    /// Creates a test thread configuration with realistic values
+    /// Creates a test thread configuration with realistic values and REAL POOL
+    /// This method now REQUIRES a valid pool ID - no more fake pools!
     /// </summary>
     public ThreadConfig CreateTestThreadConfig(
         ThreadType threadType = ThreadType.Deposit,
@@ -90,10 +91,17 @@ public class TestHelper : IDisposable
         bool autoRefill = false,
         bool shareTokens = false)
     {
+        if (poolId == null)
+        {
+            throw new InvalidOperationException(
+                "PoolId is required. Use CreateTestPool() first or GetOrCreateTestPools() to get valid pool IDs. " +
+                "No more fake pools allowed!");
+        }
+
         return new ThreadConfig
         {
             ThreadType = threadType,
-            PoolId = poolId ?? $"test_pool_{Guid.NewGuid():N}",
+            PoolId = poolId,
             TokenType = tokenType,
             SwapDirection = swapDirection,
             InitialAmount = initialAmount,
@@ -102,6 +110,66 @@ public class TestHelper : IDisposable
             Status = ThreadStatus.Created,
             CreatedAt = DateTime.UtcNow
         };
+    }
+
+    /// <summary>
+    /// Creates a real test pool on the blockchain
+    /// </summary>
+    public async Task<string> CreateTestPoolAsync(
+        int tokenADecimals = TestConstants.TOKEN_A_DECIMALS,
+        int tokenBDecimals = TestConstants.TOKEN_B_DECIMALS,
+        ulong ratioWholeNumber = TestConstants.EXCHANGE_RATIO_DENOMINATOR,
+        string ratioDirection = "a_to_b")
+    {
+        var poolParams = new PoolCreationParams
+        {
+            TokenADecimals = tokenADecimals,
+            TokenBDecimals = tokenBDecimals,
+            RatioWholeNumber = ratioWholeNumber,
+            RatioDirection = ratioDirection
+        };
+
+        var poolState = await SolanaClientService.CreatePoolAsync(poolParams);
+        Logger.LogInformation("Created REAL test pool {PoolId} with tokens {TokenA}/{TokenB}", 
+            poolState.PoolId, poolState.TokenAMint, poolState.TokenBMint);
+
+        return poolState.PoolId;
+    }
+
+    /// <summary>
+    /// Gets or creates 3 test pools as specified in requirements
+    /// If saved pools don't exist, creates new ones and replaces the saved data
+    /// </summary>
+    public async Task<List<string>> GetOrCreateTestPoolsAsync()
+    {
+        var existingPools = await SolanaClientService.GetAllPoolsAsync();
+        
+        if (existingPools.Count >= 3)
+        {
+            Logger.LogInformation("Found {Count} existing pools - using first 3", existingPools.Count);
+            return existingPools.Take(3).Select(p => p.PoolId).ToList();
+        }
+
+        Logger.LogInformation("Found only {Count} existing pools - creating {Needed} more", 
+            existingPools.Count, 3 - existingPools.Count);
+
+        var poolIds = existingPools.Select(p => p.PoolId).ToList();
+
+        // Create additional pools as needed
+        var poolsToCreate = 3 - existingPools.Count;
+        for (int i = 0; i < poolsToCreate; i++)
+        {
+            var poolId = await CreateTestPoolAsync(
+                tokenADecimals: 9,          // SOL-like decimals
+                tokenBDecimals: 6,          // USDC-like decimals  
+                ratioWholeNumber: (ulong)(160 + i * 50), // Different ratios: 160, 210, 260
+                ratioDirection: "a_to_b"
+            );
+            poolIds.Add(poolId);
+        }
+
+        Logger.LogInformation("Successfully ensured 3 pools exist: {Pools}", string.Join(", ", poolIds));
+        return poolIds;
     }
     
     /// <summary>

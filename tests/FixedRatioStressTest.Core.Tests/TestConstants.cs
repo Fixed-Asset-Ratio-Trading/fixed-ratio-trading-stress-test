@@ -22,6 +22,12 @@ public static class TestConstants
     /// <summary>Maximum concurrent threads for stress testing</summary>
     public const int CONCURRENT_THREADS = 4;
     
+    /// <summary>Enable automatic wallet refill for tests</summary>
+    public const bool AUTO_REFILL_ENABLED = true;
+    
+    /// <summary>Enable LP token sharing between threads</summary>
+    public const bool LP_TOKEN_SHARING = false;
+    
     /// <summary>Duration in seconds for each thread lifecycle test</summary>
     public const int TEST_DURATION_SECONDS = 300; // 5 minutes
     
@@ -59,6 +65,15 @@ public static class TestConstants
     
     /// <summary>Default swap amount in basis points</summary>
     public const ulong DEFAULT_SWAP_AMOUNT = 500; // 5 basis points = 0.05%
+    
+    /// <summary>Default withdrawal amount in basis points</summary>
+    public const ulong DEFAULT_WITHDRAWAL_AMOUNT = 750; // 7.5 basis points = 0.075%
+    
+    /// <summary>Initial liquidity for Token A in basis points</summary>
+    public const ulong INITIAL_LIQUIDITY_A = 1_000_000_000_000; // 1000 SOL in basis points
+    
+    /// <summary>Initial liquidity for Token B in basis points</summary>
+    public const ulong INITIAL_LIQUIDITY_B = 160_000_000_000; // 160,000 USDT in basis points
     
     /// <summary>Maximum slippage tolerance for swaps (5%)</summary>
     public const double MAX_SLIPPAGE_PERCENT = 5.0;

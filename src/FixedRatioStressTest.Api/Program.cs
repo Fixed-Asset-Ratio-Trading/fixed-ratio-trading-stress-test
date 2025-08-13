@@ -63,11 +63,14 @@ builder.Services.AddSingleton(typeof(HighPerformanceObjectPool<>));
 
 // Register core application services
 builder.Services.AddSingleton<IStorageService, JsonFileStorageService>();
+builder.Services.AddSingleton<IComputeUnitManager, ComputeUnitManager>();
+builder.Services.AddSingleton<IContractVersionService, RawRpcContractVersionService>(); // Using raw RPC to bypass Solnet issues
 builder.Services.AddSingleton<ISolanaClientService, SolanaClientService>();
 builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
 builder.Services.AddSingleton<IThreadManager, ThreadManager>();
 
 // Add background services
+builder.Services.AddHostedService<ContractVersionStartupService>(); // Contract version validation (runs first)
 builder.Services.AddHostedService<PerformanceMonitorService>();
 
 // Configure Windows Service support (if needed)
