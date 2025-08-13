@@ -8,9 +8,7 @@ using Solnet.Rpc.Messages;
 using Solnet.Rpc.Models;
 using Solnet.Wallet;
 using Solnet.Programs;
-using Solnet.Programs.TokenProgram;
-using Solnet.Programs.AssociatedTokenAccountProgram;
-using Solnet.Programs.SystemProgram;
+using Solnet.Programs.Utilities;
 using FixedRatioStressTest.Core.Interfaces;
 using FixedRatioStressTest.Common.Models;
 
@@ -41,15 +39,18 @@ namespace FixedRatioStressTest.Infrastructure.Services
 
         public Wallet GenerateWallet()
         {
-            var wallet = new Wallet(Keypair.Generate());
-            _logger.LogDebug("Generated new wallet: {Address}", wallet.PublicKey);
+            // Generate a new wallet with a random private key
+            var privateKey = new byte[64];
+            System.Security.Cryptography.RandomNumberGenerator.Fill(privateKey);
+            var wallet = new Wallet(privateKey, "", SeedMode.Bip39);
+            _logger.LogDebug("Generated new wallet: {Address}", wallet.Account.PublicKey);
             return wallet;
         }
 
         public Wallet RestoreWallet(byte[] privateKey)
         {
-            var keypair = new Keypair(privateKey);
-            return new Wallet(keypair);
+            var wallet = new Wallet(privateKey, "", SeedMode.Bip39);
+            return wallet;
         }
 
         public async Task<ulong> GetSolBalanceAsync(string publicKey)
@@ -73,7 +74,7 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 var tokenAccounts = await _rpcClient.GetTokenAccountsByOwnerAsync(
                     publicKey, 
                     mintAddress, 
-                    TokenProgram.ProgramIdKey);
+                    TokenProgram.ProgramIdKey.ToString());
                 
                 if (tokenAccounts.Result?.Value?.Count > 0)
                 {
@@ -117,14 +118,14 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 // Generate pool ID
                 var poolId = Guid.NewGuid().ToString("N");
                 
-                // Create token mints
-                var tokenAKeypair = Keypair.Generate();
-                var tokenBKeypair = Keypair.Generate();
+                // Create token mints using new wallets
+                var tokenAWallet = GenerateWallet();
+                var tokenBWallet = GenerateWallet();
                 
                 // Ensure proper token ordering (smaller pubkey is Token A)
-                if (string.Compare(tokenAKeypair.PublicKey.ToString(), tokenBKeypair.PublicKey.ToString()) > 0)
+                if (string.Compare(tokenAWallet.Account.PublicKey.ToString(), tokenBWallet.Account.PublicKey.ToString()) > 0)
                 {
-                    (tokenAKeypair, tokenBKeypair) = (tokenBKeypair, tokenAKeypair);
+                    (tokenAWallet, tokenBWallet) = (tokenBWallet, tokenAWallet);
                 }
                 
                 // Generate decimals if not specified
@@ -138,8 +139,8 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 // Create pool config
                 var poolConfig = new PoolConfig
                 {
-                    TokenAMint = tokenAKeypair.PublicKey.ToString(),
-                    TokenBMint = tokenBKeypair.PublicKey.ToString(),
+                    TokenAMint = tokenAWallet.Account.PublicKey.ToString(),
+                    TokenBMint = tokenBWallet.Account.PublicKey.ToString(),
                     TokenADecimals = tokenADecimals,
                     TokenBDecimals = tokenBDecimals,
                     RatioDirection = ratioDirection
@@ -158,8 +159,8 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 }
                 
                 // Store mint authorities for later minting
-                _mintAuthorities[tokenAKeypair.PublicKey.ToString()] = new Wallet(tokenAKeypair);
-                _mintAuthorities[tokenBKeypair.PublicKey.ToString()] = new Wallet(tokenBKeypair);
+                _mintAuthorities[tokenAWallet.Account.PublicKey.ToString()] = tokenAWallet;
+                _mintAuthorities[tokenBWallet.Account.PublicKey.ToString()] = tokenBWallet;
                 
                 // Create pool state
                 var poolState = new PoolState
@@ -419,8 +420,16 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 Encoding.UTF8.GetBytes(poolId)
             };
             
-            var pda = AddressExtensions.FindProgramAddress(seeds, new PublicKey(_config.ProgramId));
-            return pda.Address.ToString();
+            if (PublicKey.TryFindProgramAddress(
+                seeds, 
+                new PublicKey(_config.ProgramId), 
+                out var pda, 
+                out _))
+            {
+                return pda.ToString();
+            }
+            
+            throw new InvalidOperationException("Failed to derive pool state PDA");
         }
 
         public string DeriveTokenVaultPda(string poolId, string tokenMint)
@@ -432,8 +441,16 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 new PublicKey(tokenMint).KeyBytes
             };
             
-            var pda = AddressExtensions.FindProgramAddress(seeds, new PublicKey(_config.ProgramId));
-            return pda.Address.ToString();
+            if (PublicKey.TryFindProgramAddress(
+                seeds, 
+                new PublicKey(_config.ProgramId), 
+                out var pda, 
+                out _))
+            {
+                return pda.ToString();
+            }
+            
+            throw new InvalidOperationException("Failed to derive token vault PDA");
         }
 
         public string DeriveLpMintPda(string poolId, string tokenMint)
@@ -445,8 +462,16 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 new PublicKey(tokenMint).KeyBytes
             };
             
-            var pda = AddressExtensions.FindProgramAddress(seeds, new PublicKey(_config.ProgramId));
-            return pda.Address.ToString();
+            if (PublicKey.TryFindProgramAddress(
+                seeds, 
+                new PublicKey(_config.ProgramId), 
+                out var pda, 
+                out _))
+            {
+                return pda.ToString();
+            }
+            
+            throw new InvalidOperationException("Failed to derive LP mint PDA");
         }
 
         public string DerivePoolTreasuryPda(string poolId)
@@ -457,8 +482,16 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 Encoding.UTF8.GetBytes(poolId)
             };
             
-            var pda = AddressExtensions.FindProgramAddress(seeds, new PublicKey(_config.ProgramId));
-            return pda.Address.ToString();
+            if (PublicKey.TryFindProgramAddress(
+                seeds, 
+                new PublicKey(_config.ProgramId), 
+                out var pda, 
+                out _))
+            {
+                return pda.ToString();
+            }
+            
+            throw new InvalidOperationException("Failed to derive pool treasury PDA");
         }
 
         private string DeriveMainTreasuryPda()
@@ -468,8 +501,16 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 Encoding.UTF8.GetBytes("main_treasury")
             };
             
-            var pda = AddressExtensions.FindProgramAddress(seeds, new PublicKey(_config.ProgramId));
-            return pda.Address.ToString();
+            if (PublicKey.TryFindProgramAddress(
+                seeds, 
+                new PublicKey(_config.ProgramId), 
+                out var pda, 
+                out _))
+            {
+                return pda.ToString();
+            }
+            
+            throw new InvalidOperationException("Failed to derive main treasury PDA");
         }
 
         // System state
@@ -523,8 +564,9 @@ namespace FixedRatioStressTest.Infrastructure.Services
             {
                 try
                 {
-                    var result = await _rpcClient.GetSignatureStatusesAsync(new[] { signature });
-                    if (result.WasRequestSuccessfullyHandled && result.Result?.Value?.Length > 0)
+                    var signatures = new List<string> { signature };
+                    var result = await _rpcClient.GetSignatureStatusesAsync(signatures);
+                    if (result.WasRequestSuccessfullyHandled && result.Result?.Value?.Count > 0)
                     {
                         var status = result.Result.Value[0];
                         if (status?.ConfirmationStatus == "confirmed" || status?.ConfirmationStatus == "finalized")

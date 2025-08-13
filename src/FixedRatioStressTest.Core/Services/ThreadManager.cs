@@ -76,7 +76,8 @@ public class ThreadManager : IThreadManager
             // Phase 3: Request airdrop if balance is low (devnet/localnet only)
             if (solBalance < 100000000) // Less than 0.1 SOL
             {
-                var airdropSuccess = await _transactionBuilder.RequestAirdropAsync(config.PublicKey, 1000000000); // 1 SOL
+                var airdropSignature = await _solanaClient.RequestAirdropAsync(config.PublicKey, 1000000000); // 1 SOL
+                var airdropSuccess = !string.IsNullOrEmpty(airdropSignature);
                 if (airdropSuccess)
                 {
                     _logger.LogInformation("Requested SOL airdrop for thread {ThreadId}", threadId);
@@ -235,8 +236,9 @@ public class ThreadManager : IThreadManager
             var depositAmount = (ulong)random.Next(1000, Math.Max(1001, (int)(solBalance * 0.05)));
             
             // Submit deposit transaction
-            var signature = await _transactionBuilder.SubmitDepositTransactionAsync(
+            var result = await _solanaClient.ExecuteDepositAsync(
                 wallet, config.PoolId, config.TokenType, depositAmount);
+            var signature = result.TransactionSignature;
 
             _logger.LogInformation("Deposit completed for thread {ThreadId}: {Amount} lamports, signature: {Signature}", 
                 config.ThreadId, depositAmount, signature);
@@ -272,8 +274,9 @@ public class ThreadManager : IThreadManager
             var lpTokenAmount = (ulong)random.Next(1000, 10000);
             
             // Submit withdrawal transaction
-            var signature = await _transactionBuilder.SubmitWithdrawalTransactionAsync(
+            var result = await _solanaClient.ExecuteWithdrawalAsync(
                 wallet, config.PoolId, config.TokenType, lpTokenAmount);
+            var signature = result.TransactionSignature;
 
             _logger.LogInformation("Withdrawal completed for thread {ThreadId}: {Amount} LP tokens, signature: {Signature}", 
                 config.ThreadId, lpTokenAmount, signature);
@@ -308,8 +311,9 @@ public class ThreadManager : IThreadManager
             var minimumOutput = swapAmount * 95 / 100; // 5% slippage tolerance
             
             // Submit swap transaction
-            var signature = await _transactionBuilder.SubmitSwapTransactionAsync(
+            var result = await _solanaClient.ExecuteSwapAsync(
                 wallet, config.PoolId, config.SwapDirection ?? SwapDirection.AToB, swapAmount, minimumOutput);
+            var signature = result.TransactionSignature;
 
             _logger.LogInformation("Swap completed for thread {ThreadId}: {Amount} input, direction: {Direction}, signature: {Signature}", 
                 config.ThreadId, swapAmount, config.SwapDirection, signature);

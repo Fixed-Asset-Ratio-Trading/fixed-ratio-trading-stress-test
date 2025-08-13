@@ -26,6 +26,8 @@ public enum ThreadStatus
     Created,
     Running,
     Stopped,
+    Paused,
+    Stopping,
+    Failed,
     Error
 }
-

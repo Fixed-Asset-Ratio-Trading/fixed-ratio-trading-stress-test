@@ -1,5 +1,12 @@
 namespace FixedRatioStressTest.Common.Models;
 
+public class ThreadError
+{
+    public DateTime Timestamp { get; set; }
+    public string ErrorMessage { get; set; } = string.Empty;
+    public string OperationType { get; set; } = string.Empty;
+}
+
 public class ThreadStatistics
 {
     public int SuccessfulOperations { get; set; }
@@ -42,12 +49,5 @@ public class ThreadStatistics
     public ulong CurrentTokenABalance { get; set; }
     public ulong CurrentTokenBBalance { get; set; }
     public ulong CurrentLpTokenBalance { get; set; }
-}
-
-public class ThreadError
-{
-    public DateTime Timestamp { get; set; }
-    public string ErrorMessage { get; set; } = string.Empty;
-    public string OperationType { get; set; } = string.Empty;
 }
 

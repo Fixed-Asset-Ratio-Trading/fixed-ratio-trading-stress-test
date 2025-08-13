@@ -74,13 +74,13 @@ namespace FixedRatioStressTest.Common.Models
         public double PriceImpact { get; set; }
         public string SwapDirection { get; set; } = string.Empty;
         
-        public static SwapCalculation Calculate(PoolState pool, SwapDirection direction, ulong inputAmount, double slippageTolerance = 0.01)
+        public static SwapCalculation Calculate(PoolState pool, Common.Models.SwapDirection direction, ulong inputAmount, double slippageTolerance = 0.01)
         {
             // Fixed ratio swap formula: output = (input × output_ratio) ÷ input_ratio
             ulong outputAmount = direction switch
             {
-                SwapDirection.AToB => (inputAmount * pool.RatioBDenominator) / pool.RatioANumerator,
-                SwapDirection.BToA => (inputAmount * pool.RatioANumerator) / pool.RatioBDenominator,
+                Common.Models.SwapDirection.AToB => (inputAmount * pool.RatioBDenominator) / pool.RatioANumerator,
+                Common.Models.SwapDirection.BToA => (inputAmount * pool.RatioANumerator) / pool.RatioBDenominator,
                 _ => throw new ArgumentException("Invalid swap direction")
             };
             
