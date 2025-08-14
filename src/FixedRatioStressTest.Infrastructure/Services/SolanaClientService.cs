@@ -441,7 +441,7 @@ public async Task CleanupInvalidPoolsAsync()
             
             var coreWalletConfig = new CoreWalletConfig
             {
-                PrivateKey = newWallet.Account.PrivateKey.Key,
+                PrivateKey = Convert.ToBase64String(newWallet.Account.PrivateKey.KeyBytes),
                 PublicKey = newWallet.Account.PublicKey.ToString(),
                 CreatedAt = DateTime.UtcNow,
                 LastBalanceCheck = DateTime.UtcNow
@@ -477,7 +477,7 @@ public async Task CleanupInvalidPoolsAsync()
             
             // Check current balance
             var currentBalance = await GetSolBalanceAsync(coreWallet.PublicKey);
-            var requiredBalance = 2_000_000_000UL; // 2 SOL minimum for pool creation operations
+            var requiredBalance = 1_500_000_000UL; // 1.5 SOL minimum for pool creation operations (adjusted for localnet limits)
             
             _logger.LogInformation("Current balance: {Current} SOL, Required: {Required} SOL", 
                 currentBalance / 1_000_000_000.0, requiredBalance / 1_000_000_000.0);
@@ -490,36 +490,55 @@ public async Task CleanupInvalidPoolsAsync()
             
             _logger.LogInformation("⚠️ Insufficient SOL balance, attempting airdrop...");
             
-            // Try to fund with airdrops
+            // Try to fund with airdrops using improved strategy
             var neededAmount = requiredBalance - currentBalance;
             var funded = false;
             
-            for (int attempt = 1; attempt <= 3 && !funded; attempt++)
+            for (int attempt = 1; attempt <= 5 && !funded; attempt++)
             {
                 try
                 {
-                    var airdropAmount = Math.Min(1_000_000_000UL, neededAmount); // 1 SOL max per request
-                    _logger.LogInformation("Airdrop attempt {Attempt}/3: Requesting {Amount} SOL", 
+                    // Request smaller amounts more frequently for better success rate
+                    var airdropAmount = Math.Min(500_000_000UL, neededAmount); // 0.5 SOL max per request
+                    _logger.LogInformation("Airdrop attempt {Attempt}/5: Requesting {Amount} SOL", 
                         attempt, airdropAmount / 1_000_000_000.0);
                     
-                    await RequestAirdropAsync(coreWallet.PublicKey, airdropAmount);
+                    var airdropSignature = await RequestAirdropAsync(coreWallet.PublicKey, airdropAmount);
+                    _logger.LogInformation("Airdrop transaction signature: {Signature}", airdropSignature);
                     
-                    // Wait for confirmation
-                    await Task.Delay(3000);
+                    // Wait longer for confirmation and check multiple times
+                    for (int confirmCheck = 1; confirmCheck <= 3; confirmCheck++)
+                    {
+                        await Task.Delay(2000); // Wait 2 seconds between checks
+                        currentBalance = await GetSolBalanceAsync(coreWallet.PublicKey);
+                        _logger.LogInformation("Balance check {Check}/3 after airdrop attempt {Attempt}: {Balance} SOL", 
+                            confirmCheck, attempt, currentBalance / 1_000_000_000.0);
+                        
+                        if (currentBalance >= requiredBalance)
+                        {
+                            funded = true;
+                            _logger.LogInformation("✅ Core wallet successfully funded via airdrop");
+                            break;
+                        }
+                    }
                     
-                    currentBalance = await GetSolBalanceAsync(coreWallet.PublicKey);
-                    _logger.LogInformation("Balance after airdrop attempt {Attempt}: {Balance} SOL", 
-                        attempt, currentBalance / 1_000_000_000.0);
+                    // Update needed amount for next iteration
+                    neededAmount = requiredBalance - currentBalance;
                     
-                    if (currentBalance >= requiredBalance)
+                    if (neededAmount <= 0)
                     {
                         funded = true;
-                        _logger.LogInformation("✅ Core wallet successfully funded via airdrop");
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Airdrop attempt {Attempt} failed", attempt);
+                    _logger.LogWarning(ex, "Airdrop attempt {Attempt} failed: {Message}", attempt, ex.Message);
+                    
+                    // Wait longer between failed attempts
+                    if (attempt < 5)
+                    {
+                        await Task.Delay(5000); // Wait 5 seconds before next attempt
+                    }
                 }
             }
             
@@ -560,7 +579,9 @@ public async Task CleanupInvalidPoolsAsync()
                 throw new InvalidOperationException("Core wallet not found. This should have been created during application startup.");
             }
             
-            var coreKeyPair = RestoreWallet(System.Text.Encoding.UTF8.GetBytes(coreWallet.PrivateKey));
+            // Decode the Base64 private key correctly
+            var privateKeyBytes = Convert.FromBase64String(coreWallet.PrivateKey);
+            var coreKeyPair = RestoreWallet(privateKeyBytes);
             
             // Generate new mint address
             var mintKeypair = GenerateWallet();
@@ -649,7 +670,9 @@ public async Task CleanupInvalidPoolsAsync()
             // Step 2: Check SOL balance and attempt funding if needed
             await EnsureCoreWalletHasSufficientSolAsync(coreWallet);
             
-            var coreKeyPair = RestoreWallet(System.Text.Encoding.UTF8.GetBytes(coreWallet.PrivateKey));
+            // Decode the Base64 private key correctly
+            var privateKeyBytes = Convert.FromBase64String(coreWallet.PrivateKey);
+            var coreKeyPair = RestoreWallet(privateKeyBytes);
             
             // Step 3: Create token mints using core wallet as authority
             _logger.LogInformation("🪙 Creating token mints...");
@@ -683,8 +706,38 @@ public async Task CleanupInvalidPoolsAsync()
             try
             {
                 _logger.LogInformation("📤 Submitting pool creation to smart contract...");
-                var poolTransaction = await _transactionBuilder.BuildCreatePoolTransactionAsync(coreKeyPair, poolConfig);
-                poolCreationSignature = await SendTransactionAsync(poolTransaction);
+                Console.WriteLine("[DEBUG] About to call BuildCreatePoolTransactionAsync...");
+                // CRITICAL FIX: Build transaction using existing method but bypass our wrapper
+                // The issue is with our SendTransactionAsync wrapper, not the transaction building
+                byte[] poolTransactionBytes;
+                try
+                {
+                    poolTransactionBytes = await _transactionBuilder.BuildCreatePoolTransactionAsync(coreKeyPair, poolConfig);
+                    Console.WriteLine($"[DEBUG] BuildCreatePoolTransactionAsync returned {poolTransactionBytes.Length} bytes");
+                    if (poolTransactionBytes.Length < 100) // Transaction should be much larger
+                    {
+                        Console.WriteLine($"[DEBUG] WARNING: Transaction bytes too small! First 20 bytes: {Convert.ToHexString(poolTransactionBytes)}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[DEBUG] Exception in BuildCreatePoolTransactionAsync: {ex.Message}");
+                    Console.WriteLine($"[DEBUG] Exception type: {ex.GetType().Name}");
+                    Console.WriteLine($"[DEBUG] Stack trace: {ex.StackTrace}");
+                    throw;
+                }
+                
+                // Call RPC client directly (bypass our wrapper that's causing serialization issues)
+                Console.WriteLine($"[DEBUG] About to call _rpcClient.SendTransactionAsync with {poolTransactionBytes.Length} bytes...");
+                var result = await _rpcClient.SendTransactionAsync(poolTransactionBytes);
+                Console.WriteLine($"[DEBUG] _rpcClient.SendTransactionAsync completed. Success: {result.WasRequestSuccessfullyHandled}");
+                
+                if (!result.WasRequestSuccessfullyHandled)
+                {
+                    throw new InvalidOperationException($"Pool creation transaction failed: {result.Reason}");
+                }
+                
+                poolCreationSignature = result.Result;
                 
                 var confirmed = await ConfirmTransactionAsync(poolCreationSignature, maxRetries: 5);
                 if (!confirmed)
@@ -935,18 +988,25 @@ public async Task CleanupInvalidPoolsAsync()
         {
             try
             {
+                _logger.LogDebug("Requesting airdrop of {Lamports} lamports ({SOL} SOL) to {Address}", 
+                    lamports, lamports / 1_000_000_000.0, walletAddress);
+                
                 var result = await _rpcClient.RequestAirdropAsync(walletAddress, lamports);
                 if (result.WasRequestSuccessfullyHandled)
                 {
-                    _logger.LogInformation("Requested airdrop of {Lamports} to {Address}", lamports, walletAddress);
+                    _logger.LogInformation("✅ Airdrop request successful: {Lamports} lamports to {Address}, signature: {Signature}", 
+                        lamports, walletAddress, result.Result);
                     return result.Result;
                 }
                 
-                throw new InvalidOperationException($"Airdrop request failed: {result.Reason}");
+                var errorMsg = $"Airdrop request failed: {result.Reason} (HTTP {result.HttpStatusCode})";
+                _logger.LogWarning("❌ {ErrorMsg}", errorMsg);
+                throw new InvalidOperationException(errorMsg);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to request airdrop");
+                _logger.LogError(ex, "💥 Failed to request airdrop of {Lamports} lamports to {Address}: {Message}", 
+                    lamports, walletAddress, ex.Message);
                 throw;
             }
         }
@@ -1181,6 +1241,7 @@ public async Task CleanupInvalidPoolsAsync()
                     TokenBMint = tokenBMint,
                     TokenADecimals = tokenADecimals,
                     TokenBDecimals = tokenBDecimals,
+                    RatioWholeNumber = ratioWholeNumber,
                     RatioDirection = ratioDirection
                 };
                 

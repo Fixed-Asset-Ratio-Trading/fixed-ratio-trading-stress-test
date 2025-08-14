@@ -60,8 +60,11 @@ public class TestHelper : IDisposable
         // Register REAL services (not mocks)
         services.AddSingleton<IStorageService, JsonFileStorageService>();
         
-        // Use a stub TransactionBuilderService to break circular dependency while still testing real functionality
-        services.AddSingleton<ITransactionBuilderService, StubTransactionBuilderService>();
+        // Register ComputeUnitManager for TransactionBuilderService
+        services.AddSingleton<IComputeUnitManager, ComputeUnitManager>();
+        
+        // Use REAL TransactionBuilderService for actual blockchain testing
+        services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
         
         services.AddSingleton<ISolanaClientService, SolanaClientService>();
         services.AddSingleton<IThreadManager, ThreadManager>();

@@ -1,4 +1,5 @@
 using Solnet.Wallet;
+using Solnet.Rpc.Models;
 using FixedRatioStressTest.Common.Models;
 
 namespace FixedRatioStressTest.Core.Interfaces;
@@ -6,11 +7,13 @@ namespace FixedRatioStressTest.Core.Interfaces;
 public interface ITransactionBuilderService
 {
     /// <summary>
-    /// Builds a transaction for creating a new pool
+    /// Builds a transaction for creating a new pool (returns byte array - legacy method)
     /// </summary>
     Task<byte[]> BuildCreatePoolTransactionAsync(
         Wallet payer,
         PoolConfig poolConfig);
+        
+
     
     /// <summary>
     /// Simulates a pool creation transaction without executing it

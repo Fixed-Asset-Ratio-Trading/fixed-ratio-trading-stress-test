@@ -49,6 +49,10 @@ namespace FixedRatioStressTest.Common.Models
         public ulong RatioANumerator { get; set; }
         public ulong RatioBDenominator { get; set; }
         
+        // Additional fields needed for proper ratio calculation (matching JavaScript)
+        public ulong RatioWholeNumber { get; set; }
+        public string RatioDirection { get; set; } = "a_to_b";
+        
         // Normalize pool configuration according to contract rules
         public void Normalize()
         {
@@ -69,8 +73,6 @@ namespace FixedRatioStressTest.Common.Models
                 // RatioANumerator is set based on the whole number ratio
             }
         }
-        
-        public string RatioDirection { get; set; } = "a_to_b";
     }
     
     public class SwapCalculation

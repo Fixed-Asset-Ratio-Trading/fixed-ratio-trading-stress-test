@@ -125,6 +125,10 @@ public class RealPoolCreationTests : IDisposable
         // Arrange
         _logger.LogInformation("=== TEST: CreateRealPool_ShouldCreateContractPool_Success ===");
         
+        // First ensure we have a funded core wallet
+        var coreWallet = await _testHelper.SolanaClientService.GetOrCreateCoreWalletAsync();
+        _output.WriteLine($"Using core wallet: {coreWallet.PublicKey} ({coreWallet.CurrentSolBalance / 1_000_000_000.0:F2} SOL)");
+        
         var poolParams = new PoolCreationParams
         {
             TokenADecimals = 9,  // SOL-like
@@ -133,7 +137,7 @@ public class RealPoolCreationTests : IDisposable
             RatioDirection = "a_to_b"
         };
 
-        _output.WriteLine($"Creating real pool:");
+        _output.WriteLine($"Creating real pool with ACTUAL smart contract call:");
         _output.WriteLine($"  Token A Decimals: {poolParams.TokenADecimals}");
         _output.WriteLine($"  Token B Decimals: {poolParams.TokenBDecimals}");
         _output.WriteLine($"  Ratio: {poolParams.RatioWholeNumber}");
@@ -141,27 +145,45 @@ public class RealPoolCreationTests : IDisposable
 
         // Act
         _logger.LogInformation("Creating real pool on smart contract...");
-        var realPool = await _testHelper.SolanaClientService.CreateRealPoolAsync(poolParams);
-
-        // Assert
-        Assert.NotNull(realPool);
-        Assert.NotEmpty(realPool.PoolId);
-        Assert.NotEmpty(realPool.TokenAMint);
-        Assert.NotEmpty(realPool.TokenBMint);
-        Assert.Equal(9, realPool.TokenADecimals);
-        Assert.Equal(6, realPool.TokenBDecimals);
-        Assert.True(realPool.RatioANumerator > 0);
-        Assert.True(realPool.RatioBDenominator > 0);
-        Assert.NotEmpty(realPool.CreationSignature);
         
-        _output.WriteLine($"Real pool created:");
-        _output.WriteLine($"  Pool ID: {realPool.PoolId}");
-        _output.WriteLine($"  Token A: {realPool.TokenAMint} ({realPool.TokenADecimals} decimals)");
-        _output.WriteLine($"  Token B: {realPool.TokenBMint} ({realPool.TokenBDecimals} decimals)");
-        _output.WriteLine($"  Ratio: {realPool.RatioDisplay}");
-        _output.WriteLine($"  Signature: {realPool.CreationSignature}");
+        try
+        {
+            var realPool = await _testHelper.SolanaClientService.CreateRealPoolAsync(poolParams);
 
-        _logger.LogInformation("✅ Real pool creation completed successfully");
+            // Assert
+            Assert.NotNull(realPool);
+            Assert.NotEmpty(realPool.PoolId);
+            Assert.NotEmpty(realPool.TokenAMint);
+            Assert.NotEmpty(realPool.TokenBMint);
+            Assert.Equal(9, realPool.TokenADecimals);
+            Assert.Equal(6, realPool.TokenBDecimals);
+            Assert.True(realPool.RatioANumerator > 0);
+            Assert.True(realPool.RatioBDenominator > 0);
+            Assert.NotEmpty(realPool.CreationSignature);
+            
+            _output.WriteLine($"✅ Real pool created on blockchain:");
+            _output.WriteLine($"  Pool ID: {realPool.PoolId}");
+            _output.WriteLine($"  Token A: {realPool.TokenAMint} ({realPool.TokenADecimals} decimals)");
+            _output.WriteLine($"  Token B: {realPool.TokenBMint} ({realPool.TokenBDecimals} decimals)");
+            _output.WriteLine($"  Ratio: {realPool.RatioDisplay}");
+            _output.WriteLine($"  Signature: {realPool.CreationSignature}");
+            _output.WriteLine($"  This pool should now appear in your dashboard!");
+
+            _logger.LogInformation("✅ Real pool creation completed successfully");
+        }
+        catch (Exception ex)
+        {
+            _output.WriteLine($"❌ Pool creation failed with error: {ex.Message}");
+            _output.WriteLine($"   Error Type: {ex.GetType().Name}");
+            if (ex.InnerException != null)
+            {
+                _output.WriteLine($"   Inner Exception: {ex.InnerException.Message}");
+            }
+            
+            // For debugging, let's see the full stack trace
+            _logger.LogError(ex, "Full pool creation error details");
+            throw; // Re-throw to fail the test and see the issue
+        }
     }
 
     [Fact]

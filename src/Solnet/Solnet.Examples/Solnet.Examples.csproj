@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BifrostSecurity" Version="1.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Solnet.Extensions\Solnet.Extensions.csproj" />
+    <ProjectReference Include="..\Solnet.KeyStore\Solnet.KeyStore.csproj" />
+    <ProjectReference Include="..\Solnet.Programs\Solnet.Programs.csproj" />
+    <ProjectReference Include="..\Solnet.Rpc\Solnet.Rpc.csproj" />
+    <ProjectReference Include="..\Solnet.Wallet\Solnet.Wallet.csproj" />
+  </ItemGroup>
+
+</Project>

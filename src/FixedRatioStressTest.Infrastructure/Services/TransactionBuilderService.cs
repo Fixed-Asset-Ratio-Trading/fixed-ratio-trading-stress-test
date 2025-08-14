@@ -45,6 +45,7 @@ public class TransactionBuilderService : ITransactionBuilderService
         {
             try
             {
+                Console.WriteLine("[DEBUG] BuildCreatePoolTransactionAsync starting...");
                 _logger.LogInformation("Building pool creation transaction");
                 
                 var programId = new PublicKey(_config.ProgramId);
@@ -89,20 +90,31 @@ public class TransactionBuilderService : ITransactionBuilderService
                     AccountMeta.Writable(lpTokenBMintPda, false)
                 };
                 
-                // Create instruction data
+                // Calculate proper basis points using the same logic as JavaScript implementation
+                var (ratioANumerator, ratioBDenominator) = CalculateBasisPoints(
+                    poolConfig.TokenAMint, poolConfig.TokenBMint,
+                    poolConfig.TokenADecimals, poolConfig.TokenBDecimals,
+                    poolConfig.RatioWholeNumber, poolConfig.RatioDirection);
+
+                // Create instruction data with CORRECT discriminator (matches JavaScript)
+                Console.WriteLine($"[DEBUG] Creating instruction data: RatioA={ratioANumerator}, RatioB={ratioBDenominator}");
                 var data = new PoolInitializeInstructionData
                 {
-                    Discriminator = 4, // process_pool_initialize
-                    RatioANumerator = poolConfig.RatioANumerator,
-                    RatioBDenominator = poolConfig.RatioBDenominator
+                    Discriminator = 1, // FIXED: Use 1 instead of 4 (matches pool-creation.js)
+                    RatioANumerator = ratioANumerator,
+                    RatioBDenominator = ratioBDenominator
                 };
+                
+                var serializedData = SerializeInstructionData(data);
+                Console.WriteLine($"[DEBUG] Serialized instruction data: {serializedData.Length} bytes: {Convert.ToHexString(serializedData)}");
                 
                 var instruction = new TransactionInstruction
                 {
                     ProgramId = programId,
                     Keys = accounts,
-                    Data = SerializeInstructionData(data)
+                    Data = serializedData
                 };
+                Console.WriteLine($"[DEBUG] Created instruction with {accounts.Count} accounts and {serializedData.Length} bytes data");
                 
                 // Get compute units
                 var computeUnits = _computeUnitManager.GetComputeUnits("process_pool_initialize");
@@ -115,14 +127,20 @@ public class TransactionBuilderService : ITransactionBuilderService
                     .AddInstruction(ComputeBudgetProgram.SetComputeUnitLimit(computeUnits))
                     .AddInstruction(instruction);
                 
-                return builder.Build(payer.Account);
+                Console.WriteLine("[DEBUG] About to call builder.Build()...");
+                var result = builder.Build(payer.Account);
+                Console.WriteLine($"[DEBUG] builder.Build() returned {result.Length} bytes");
+                return result;
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"[DEBUG] BuildCreatePoolTransactionAsync failed: {ex.Message}");
                 _logger.LogError(ex, "Failed to build pool creation transaction");
                 throw;
             }
         }
+        
+
         
         public async Task<TransactionSimulationResult> SimulateCreatePoolTransactionAsync(
             Wallet payer,
@@ -700,6 +718,87 @@ public class TransactionBuilderService : ITransactionBuilderService
             throw new InvalidOperationException("Failed to derive main treasury PDA");
         }
         
+        // Helper method to get proper token ordering (matches JavaScript utils.js)
+        private (string tokenA, string tokenB) GetOrderedTokens(string tokenAMint, string tokenBMint)
+        {
+            // Convert to bytes and compare byte-by-byte (lexicographic ordering)
+            var tokenABytes = Convert.FromBase64String(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(tokenAMint)));
+            var tokenBBytes = Convert.FromBase64String(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(tokenBMint)));
+            
+            // Actually, we need to decode the Base58 addresses and compare the raw bytes
+            // This matches the Rust/JavaScript byte comparison logic
+            var tokenADecoded = DecodeBase58(tokenAMint);
+            var tokenBDecoded = DecodeBase58(tokenBMint);
+            
+            // Compare byte arrays lexicographically
+            for (int i = 0; i < Math.Min(tokenADecoded.Length, tokenBDecoded.Length); i++)
+            {
+                if (tokenADecoded[i] < tokenBDecoded[i])
+                    return (tokenAMint, tokenBMint); // A comes first
+                if (tokenADecoded[i] > tokenBDecoded[i])
+                    return (tokenBMint, tokenAMint); // B comes first
+            }
+            
+            // If all compared bytes are equal, shorter array comes first
+            return tokenADecoded.Length <= tokenBDecoded.Length 
+                ? (tokenAMint, tokenBMint) 
+                : (tokenBMint, tokenAMint);
+        }
+        
+        // Helper to decode Base58 addresses for proper comparison
+        private byte[] DecodeBase58(string base58String)
+        {
+            // Use Solnet's built-in Base58 decoder
+            return new PublicKey(base58String).KeyBytes;
+        }
+        
+        // Helper method to calculate basis points (matches JavaScript implementation)
+        private (ulong ratioANumerator, ulong ratioBDenominator) CalculateBasisPoints(
+            string tokenAMint, string tokenBMint, 
+            int tokenADecimals, int tokenBDecimals, 
+            ulong ratioWholeNumber, string ratioDirection)
+        {
+            // Get properly ordered tokens
+            var (orderedTokenA, orderedTokenB) = GetOrderedTokens(tokenAMint, tokenBMint);
+            
+            // Determine if we need to invert the ratio based on ordering
+            bool needsInversion = (orderedTokenA != tokenAMint);
+            
+            if (ratioDirection == "b_to_a")
+            {
+                needsInversion = !needsInversion;
+            }
+            
+            // Calculate basis points using token decimals
+            var decimalsA = tokenADecimals;
+            var decimalsB = tokenBDecimals;
+            var decimalsDiff = Math.Abs(decimalsA - decimalsB);
+            
+            ulong ratioANumerator, ratioBDenominator;
+            
+            if (needsInversion)
+            {
+                // Inverted ratio
+                ratioBDenominator = ratioWholeNumber;
+                ratioANumerator = (ulong)Math.Pow(10, decimalsDiff);
+            }
+            else
+            {
+                // Normal ratio
+                ratioANumerator = ratioWholeNumber;
+                ratioBDenominator = (ulong)Math.Pow(10, decimalsDiff);
+            }
+            
+            _logger.LogInformation("🔢 Basis Points Calculation:");
+            _logger.LogInformation("   Ordered Token A: {TokenA} ({DecimalsA} decimals)", orderedTokenA, decimalsA);
+            _logger.LogInformation("   Ordered Token B: {TokenB} ({DecimalsB} decimals)", orderedTokenB, decimalsB);
+            _logger.LogInformation("   Ratio Direction: {Direction}", ratioDirection);
+            _logger.LogInformation("   Needs Inversion: {NeedsInversion}", needsInversion);
+            _logger.LogInformation("   Final Ratio: {Numerator}:{Denominator}", ratioANumerator, ratioBDenominator);
+            
+            return (ratioANumerator, ratioBDenominator);
+        }
+
         // Helper method to serialize instruction data
         private byte[] SerializeInstructionData<T>(T data) where T : class
         {
