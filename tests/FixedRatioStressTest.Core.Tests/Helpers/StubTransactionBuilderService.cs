@@ -24,6 +24,17 @@ public class StubTransactionBuilderService : ITransactionBuilderService
         return Task.FromResult(StubTransaction);
     }
 
+    public Task<TransactionSimulationResult> SimulateCreatePoolTransactionAsync(Wallet payer, PoolConfig poolConfig)
+    {
+        // Return a mock simulation result that indicates success
+        return Task.FromResult(new TransactionSimulationResult 
+        { 
+            IsSuccessful = true, 
+            ComputeUnitsConsumed = 15000,
+            SimulationSummary = "✅ Stub simulation - would succeed"
+        });
+    }
+
     public Task<byte[]> BuildDepositTransactionAsync(
         Wallet wallet, 
         PoolState poolState, 

@@ -142,33 +142,17 @@ public class TestHelper : IDisposable
     /// </summary>
     public async Task<List<string>> GetOrCreateTestPoolsAsync()
     {
-        var existingPools = await SolanaClientService.GetAllPoolsAsync();
+        Logger.LogInformation("🏊 Getting or creating managed test pools...");
         
-        if (existingPools.Count >= 3)
+        // Use the new managed pool system that handles validation, cleanup, and creation
+        var poolIds = await SolanaClientService.GetOrCreateManagedPoolsAsync(targetPoolCount: 3);
+        
+        Logger.LogInformation("✅ Test pools ready: {Count} pools available", poolIds.Count);
+        foreach (var poolId in poolIds)
         {
-            Logger.LogInformation("Found {Count} existing pools - using first 3", existingPools.Count);
-            return existingPools.Take(3).Select(p => p.PoolId).ToList();
+            Logger.LogDebug("  📋 Pool: {PoolId}", poolId);
         }
-
-        Logger.LogInformation("Found only {Count} existing pools - creating {Needed} more", 
-            existingPools.Count, 3 - existingPools.Count);
-
-        var poolIds = existingPools.Select(p => p.PoolId).ToList();
-
-        // Create additional pools as needed
-        var poolsToCreate = 3 - existingPools.Count;
-        for (int i = 0; i < poolsToCreate; i++)
-        {
-            var poolId = await CreateTestPoolAsync(
-                tokenADecimals: 9,          // SOL-like decimals
-                tokenBDecimals: 6,          // USDC-like decimals  
-                ratioWholeNumber: (ulong)(160 + i * 50), // Different ratios: 160, 210, 260
-                ratioDirection: "a_to_b"
-            );
-            poolIds.Add(poolId);
-        }
-
-        Logger.LogInformation("Successfully ensured 3 pools exist: {Pools}", string.Join(", ", poolIds));
+        
         return poolIds;
     }
     

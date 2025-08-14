@@ -38,8 +38,25 @@ public interface ISolanaClientService
     
     // Pool operations
     Task<PoolState> CreatePoolAsync(PoolCreationParams parameters);
+    
+    /// <summary>
+    /// Simulates pool creation to validate the transaction before execution
+    /// </summary>
+    Task<TransactionSimulationResult> SimulatePoolCreationAsync(PoolCreationParams parameters);
     Task<PoolState> GetPoolStateAsync(string poolId);
     Task<List<PoolState>> GetAllPoolsAsync();
+    
+    // Pool lifecycle management  
+    Task<List<string>> GetOrCreateManagedPoolsAsync(int targetPoolCount = 3);
+    Task<bool> ValidatePoolExistsAsync(string poolId);
+    Task CleanupInvalidPoolsAsync();
+    
+    // Core wallet and real blockchain pool management
+    Task<CoreWalletConfig> GetOrCreateCoreWalletAsync();
+    Task<RealPoolData> CreateRealPoolAsync(PoolCreationParams parameters);
+    Task<bool> ValidateRealPoolAsync(RealPoolData pool);
+    Task<List<RealPoolData>> GetRealPoolsAsync();
+    Task<StressTestTokenMint> CreateTokenMintAsync(int decimals, string? symbol = null);
     
     // Deposit operations
     Task<DepositResult> ExecuteDepositAsync(

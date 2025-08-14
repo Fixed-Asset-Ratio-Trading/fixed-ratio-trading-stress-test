@@ -18,7 +18,37 @@ public class PoolController : ControllerBase
     }
 
     /// <summary>
+    /// Simulates pool creation to validate transaction format before execution
+    /// </summary>
+    [HttpPost("simulate")]
+    public async Task<ActionResult<JsonRpcResponse<TransactionSimulationResult>>> SimulatePoolCreation([FromBody] JsonRpcRequest request)
+    {
+        try
+        {
+            _logger.LogInformation("Pool creation simulation request received.");
+            var parameters = System.Text.Json.JsonSerializer.Deserialize<PoolCreationParams>(request.Params?.ToString() ?? "{}");
+            var simulationResult = await _solanaClient.SimulatePoolCreationAsync(parameters);
+            
+            return Ok(new JsonRpcResponse<TransactionSimulationResult>
+            {
+                Id = request.Id,
+                Result = simulationResult
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error simulating pool creation.");
+            return StatusCode(500, new JsonRpcResponse<object>
+            {
+                Id = request.Id,
+                Error = new JsonRpcError { Code = -32000, Message = ex.Message }
+            });
+        }
+    }
+
+    /// <summary>
     /// Creates a new pool on the blockchain as specified in the design documents
+    /// This includes simulation validation before actual creation
     /// </summary>
     [HttpPost("create")]
     public async Task<ActionResult<JsonRpcResponse<PoolCreationResult>>> CreatePool([FromBody] JsonRpcRequest request)

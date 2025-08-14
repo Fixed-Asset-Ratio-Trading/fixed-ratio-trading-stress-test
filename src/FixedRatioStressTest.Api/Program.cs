@@ -69,9 +69,10 @@ builder.Services.AddSingleton<ISolanaClientService, SolanaClientService>();
 builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
 builder.Services.AddSingleton<IThreadManager, ThreadManager>();
 
-// Add background services
-builder.Services.AddHostedService<ContractVersionStartupService>(); // Contract version validation (runs first)
-builder.Services.AddHostedService<PerformanceMonitorService>();
+// Add background services - ORDER MATTERS for startup!
+builder.Services.AddHostedService<ContractVersionStartupService>(); // FIRST: Must validate blockchain connectivity
+builder.Services.AddHostedService<PoolManagementStartupService>(); // SECOND: Depends on blockchain being available
+builder.Services.AddHostedService<PerformanceMonitorService>(); // THIRD: Monitoring can start last
 
 // Configure Windows Service support (if needed)
 if (OperatingSystem.IsWindows())

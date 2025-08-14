@@ -132,4 +132,23 @@ namespace FixedRatioStressTest.Common.Models
         public ulong NetworkFeePaid { get; set; }
         public string SwapDirection { get; set; } = string.Empty;
     }
+
+    /// <summary>
+    /// Result of transaction simulation
+    /// </summary>
+    public class TransactionSimulationResult
+    {
+        public bool IsSuccessful { get; set; }
+        public string? ErrorMessage { get; set; }
+        public List<string> Logs { get; set; } = new();
+        public ulong ComputeUnitsConsumed { get; set; }
+        public Dictionary<string, object> Accounts { get; set; } = new();
+        public string? TransactionSignature { get; set; }
+        public bool WouldSucceed => IsSuccessful && string.IsNullOrEmpty(ErrorMessage);
+        
+        /// <summary>
+        /// Detailed analysis of the simulation
+        /// </summary>
+        public string SimulationSummary { get; set; } = string.Empty;
+    }
 }

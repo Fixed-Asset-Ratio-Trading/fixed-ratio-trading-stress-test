@@ -13,6 +13,14 @@ public interface ITransactionBuilderService
         PoolConfig poolConfig);
     
     /// <summary>
+    /// Simulates a pool creation transaction without executing it
+    /// Returns simulation result with logs and error information
+    /// </summary>
+    Task<TransactionSimulationResult> SimulateCreatePoolTransactionAsync(
+        Wallet payer,
+        PoolConfig poolConfig);
+    
+    /// <summary>
     /// Builds a transaction for depositing tokens into a pool
     /// </summary>
     Task<byte[]> BuildDepositTransactionAsync(

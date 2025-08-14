@@ -133,6 +133,298 @@ public class JsonFileStorageService : IStorageService
         await SaveThreadStatisticsAsync(threadId, statistics);
     }
 
+    public async Task<List<string>> LoadActivePoolIdsAsync()
+    {
+        var filePath = Path.Combine(_dataDirectory, "active_pools.json");
+        
+        if (!File.Exists(filePath))
+        {
+            _logger.LogInformation("No active pools file found, returning empty list");
+            return new List<string>();
+        }
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(filePath);
+            var poolIds = JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+            _logger.LogInformation("Loaded {Count} active pool IDs from storage", poolIds.Count);
+            return poolIds;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load active pool IDs from {FilePath}", filePath);
+            return new List<string>();
+        }
+    }
+
+    public async Task SaveActivePoolIdsAsync(List<string> poolIds)
+    {
+        var filePath = Path.Combine(_dataDirectory, "active_pools.json");
+        
+        try
+        {
+            var json = JsonSerializer.Serialize(poolIds, new JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(filePath, json);
+            _logger.LogInformation("Saved {Count} active pool IDs to storage", poolIds.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to save active pool IDs to {FilePath}", filePath);
+            throw;
+        }
+    }
+
+    public async Task CleanupPoolDataAsync(string poolId)
+    {
+        try
+        {
+            var poolDataPath = Path.Combine(_dataDirectory, "pools", $"{poolId}.json");
+            if (File.Exists(poolDataPath))
+            {
+                File.Delete(poolDataPath);
+                _logger.LogInformation("Cleaned up pool data for {PoolId}", poolId);
+            }
+
+            var poolStatsPath = Path.Combine(_dataDirectory, "pool_stats", $"{poolId}.json");
+            if (File.Exists(poolStatsPath))
+            {
+                File.Delete(poolStatsPath);
+                _logger.LogInformation("Cleaned up pool statistics for {PoolId}", poolId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to cleanup pool data for {PoolId}", poolId);
+        }
+        
+        await Task.CompletedTask;
+    }
+
+    public async Task CleanupAllThreadDataForPoolAsync(string poolId)
+    {
+        try
+        {
+            var threadDirectory = Path.Combine(_dataDirectory, "threads");
+            if (!Directory.Exists(threadDirectory))
+            {
+                return;
+            }
+
+            var threadFiles = Directory.GetFiles(threadDirectory, "*.json");
+            var cleanupCount = 0;
+
+            foreach (var threadFile in threadFiles)
+            {
+                try
+                {
+                    var threadJson = await File.ReadAllTextAsync(threadFile);
+                    var threadConfig = JsonSerializer.Deserialize<ThreadConfig>(threadJson);
+                    
+                    if (threadConfig?.PoolId == poolId)
+                    {
+                        // Delete thread config file
+                        File.Delete(threadFile);
+                        cleanupCount++;
+
+                        // Delete associated statistics file
+                        var threadId = Path.GetFileNameWithoutExtension(threadFile);
+                        var statsFile = Path.Combine(_dataDirectory, "statistics", $"{threadId}.json");
+                        if (File.Exists(statsFile))
+                        {
+                            File.Delete(statsFile);
+                        }
+
+                        _logger.LogDebug("Cleaned up thread {ThreadId} associated with pool {PoolId}", threadId, poolId);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to process thread file {ThreadFile} during pool cleanup", threadFile);
+                }
+            }
+
+            _logger.LogInformation("Cleaned up {Count} threads associated with pool {PoolId}", cleanupCount, poolId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to cleanup thread data for pool {PoolId}", poolId);
+        }
+    }
+
+    public async Task<CoreWalletConfig?> LoadCoreWalletAsync()
+    {
+        var filePath = Path.Combine(_dataDirectory, "core_wallet.json");
+        
+        if (!File.Exists(filePath))
+        {
+            _logger.LogInformation("No core wallet file found");
+            return null;
+        }
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(filePath);
+            var wallet = JsonSerializer.Deserialize<CoreWalletConfig>(json);
+            _logger.LogInformation("Loaded core wallet: {PublicKey}", wallet?.PublicKey);
+            return wallet;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load core wallet from {FilePath}", filePath);
+            return null;
+        }
+    }
+
+    public async Task SaveCoreWalletAsync(CoreWalletConfig wallet)
+    {
+        var filePath = Path.Combine(_dataDirectory, "core_wallet.json");
+        
+        try
+        {
+            var json = JsonSerializer.Serialize(wallet, new JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(filePath, json);
+            _logger.LogInformation("Saved core wallet: {PublicKey}", wallet.PublicKey);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to save core wallet to {FilePath}", filePath);
+            throw;
+        }
+    }
+
+    public async Task<List<RealPoolData>> LoadRealPoolsAsync()
+    {
+        var filePath = Path.Combine(_dataDirectory, "real_pools.json");
+        
+        if (!File.Exists(filePath))
+        {
+            _logger.LogInformation("No real pools file found, returning empty list");
+            return new List<RealPoolData>();
+        }
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(filePath);
+            var pools = JsonSerializer.Deserialize<List<RealPoolData>>(json) ?? new List<RealPoolData>();
+            _logger.LogInformation("Loaded {Count} real pools from storage", pools.Count);
+            return pools;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load real pools from {FilePath}", filePath);
+            return new List<RealPoolData>();
+        }
+    }
+
+    public async Task SaveRealPoolAsync(RealPoolData pool)
+    {
+        var pools = await LoadRealPoolsAsync();
+        
+        // Update existing or add new
+        var existingIndex = pools.FindIndex(p => p.PoolId == pool.PoolId);
+        if (existingIndex >= 0)
+        {
+            pools[existingIndex] = pool;
+        }
+        else
+        {
+            pools.Add(pool);
+        }
+
+        var filePath = Path.Combine(_dataDirectory, "real_pools.json");
+        
+        try
+        {
+            var json = JsonSerializer.Serialize(pools, new JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(filePath, json);
+            _logger.LogInformation("Saved real pool: {PoolId}", pool.PoolId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to save real pool to {FilePath}", filePath);
+            throw;
+        }
+    }
+
+    public async Task DeleteRealPoolAsync(string poolId)
+    {
+        var pools = await LoadRealPoolsAsync();
+        var initialCount = pools.Count;
+        
+        pools.RemoveAll(p => p.PoolId == poolId);
+        
+        if (pools.Count < initialCount)
+        {
+            var filePath = Path.Combine(_dataDirectory, "real_pools.json");
+            
+            try
+            {
+                var json = JsonSerializer.Serialize(pools, new JsonSerializerOptions { WriteIndented = true });
+                await File.WriteAllTextAsync(filePath, json);
+                _logger.LogInformation("Deleted real pool: {PoolId}", poolId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to delete real pool from {FilePath}", filePath);
+                throw;
+            }
+        }
+    }
+
+    public async Task<List<StressTestTokenMint>> LoadTokenMintsAsync()
+    {
+        var filePath = Path.Combine(_dataDirectory, "token_mints.json");
+        
+        if (!File.Exists(filePath))
+        {
+            _logger.LogInformation("No token mints file found, returning empty list");
+            return new List<StressTestTokenMint>();
+        }
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(filePath);
+            var mints = JsonSerializer.Deserialize<List<StressTestTokenMint>>(json) ?? new List<StressTestTokenMint>();
+            _logger.LogInformation("Loaded {Count} token mints from storage", mints.Count);
+            return mints;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load token mints from {FilePath}", filePath);
+            return new List<StressTestTokenMint>();
+        }
+    }
+
+    public async Task SaveTokenMintAsync(StressTestTokenMint tokenMint)
+    {
+        var mints = await LoadTokenMintsAsync();
+        
+        // Update existing or add new
+        var existingIndex = mints.FindIndex(m => m.MintAddress == tokenMint.MintAddress);
+        if (existingIndex >= 0)
+        {
+            mints[existingIndex] = tokenMint;
+        }
+        else
+        {
+            mints.Add(tokenMint);
+        }
+
+        var filePath = Path.Combine(_dataDirectory, "token_mints.json");
+        
+        try
+        {
+            var json = JsonSerializer.Serialize(mints, new JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(filePath, json);
+            _logger.LogInformation("Saved token mint: {MintAddress} ({Decimals} decimals)", tokenMint.MintAddress, tokenMint.Decimals);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to save token mint to {FilePath}", filePath);
+            throw;
+        }
+    }
+
     private async Task<Dictionary<string, ThreadStatistics>> LoadAllStatisticsAsync()
     {
         var statsFile = Path.Combine(_dataDirectory, "statistics.json");

@@ -68,17 +68,27 @@ public class ContractVersionStartupService : IHostedService
                 return;
             }
 
-            // Could not retrieve version but contract might not be deployed yet
-            _logger.LogWarning("⚠️ Could not retrieve contract version. This may be acceptable if:");
-            _logger.LogWarning("  - Contract is not yet deployed");
-            _logger.LogWarning("  - RPC connection issues (temporary)");
-            _logger.LogWarning("  - GetVersion instruction format issues");
-            _logger.LogWarning("Service will continue to start but may not function correctly.");
+            // Could not retrieve version - this is now a critical failure
+            _logger.LogCritical("❌ Could not retrieve contract version from blockchain");
+            _logger.LogCritical("🛑 Application startup FAILED - this indicates:");
+            _logger.LogCritical("  - Contract is not deployed to the target program ID");
+            _logger.LogCritical("  - RPC connection issues");
+            _logger.LogCritical("  - GetVersion instruction format issues");
+            _logger.LogCritical("  - Program deployment or configuration problems");
+            
+            // Force application shutdown if we can't get version
+            _appLifetime.StopApplication();
+            throw new InvalidOperationException("Cannot retrieve contract version from blockchain - application cannot start safely");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "💥 Contract version validation failed with unexpected error");
-            _logger.LogWarning("Service will continue to start but version compatibility is unknown.");
+            _logger.LogCritical(ex, "💥 Contract version validation failed with unexpected error");
+            _logger.LogCritical("🛑 Application startup FAILED - cannot validate blockchain connectivity");
+            _logger.LogCritical("This indicates serious issues with RPC connection or program deployment");
+            
+            // Force application shutdown on any exception
+            _appLifetime.StopApplication();
+            throw new InvalidOperationException("Contract version validation failed during startup - application cannot continue", ex);
         }
     }
 

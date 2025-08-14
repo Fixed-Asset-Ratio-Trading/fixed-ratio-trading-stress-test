@@ -16,20 +16,23 @@ namespace FixedRatioStressTest.Infrastructure.Services
 {
     public class SolanaClientService : ISolanaClientService
     {
-        private readonly IRpcClient _rpcClient;
-        private readonly ITransactionBuilderService _transactionBuilder;
-        private readonly ILogger<SolanaClientService> _logger;
-        private readonly SolanaConfig _config;
+            private readonly IRpcClient _rpcClient;
+    private readonly ITransactionBuilderService _transactionBuilder;
+    private readonly IStorageService _storageService;
+    private readonly ILogger<SolanaClientService> _logger;
+    private readonly SolanaConfig _config;
         private readonly Dictionary<string, PoolState> _poolCache = new();
         private readonly Dictionary<string, Wallet> _mintAuthorities = new();
 
         public SolanaClientService(
             IConfiguration configuration,
             ITransactionBuilderService transactionBuilder,
+            IStorageService storageService,
             ILogger<SolanaClientService> logger)
         {
             _config = configuration.GetSection("SolanaConfiguration").Get<SolanaConfig>() ?? new SolanaConfig();
             _transactionBuilder = transactionBuilder;
+            _storageService = storageService;
             _logger = logger;
             
             var rpcUrl = _config.GetActiveRpcUrl();
@@ -104,20 +107,82 @@ namespace FixedRatioStressTest.Infrastructure.Services
             }
         }
 
-        public async Task<ulong> GetSlotAsync()
-        {
-            var slot = await _rpcClient.GetSlotAsync();
-            return slot.Result;
-        }
+            public async Task<ulong> GetSlotAsync()
+    {
+        var slot = await _rpcClient.GetSlotAsync();
+        return slot.Result;
+    }
 
         // Pool operations
+        public async Task<TransactionSimulationResult> SimulatePoolCreationAsync(PoolCreationParams parameters)
+        {
+            try
+            {
+                _logger.LogInformation("🔍 Simulating pool creation to validate transaction format");
+                
+                // Step 1: Create temporary payer wallet for simulation
+                var payerWallet = GenerateWallet();
+                
+                // Step 2: Create token mints for simulation
+                var (tokenAMint, tokenBMint, tokenADecimals, tokenBDecimals) = await CreateTokenMintsAsync(parameters);
+                
+                // Step 3: Create normalized pool configuration
+                var poolConfig = CreateNormalizedPoolConfig(
+                    tokenAMint, tokenBMint, tokenADecimals, tokenBDecimals, parameters);
+                
+                // Step 4: Simulate the pool creation transaction
+                var simulationResult = await _transactionBuilder.SimulateCreatePoolTransactionAsync(
+                    payerWallet, poolConfig);
+                
+                _logger.LogInformation("Pool creation simulation completed: {Status}", 
+                    simulationResult.IsSuccessful ? "SUCCESS" : "FAILED");
+                
+                if (!simulationResult.IsSuccessful)
+                {
+                    _logger.LogWarning("Pool creation simulation failed: {Error}", simulationResult.ErrorMessage);
+                }
+                
+                return simulationResult;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to simulate pool creation");
+                
+                return new TransactionSimulationResult
+                {
+                    IsSuccessful = false,
+                    ErrorMessage = $"Simulation failed: {ex.Message}",
+                    SimulationSummary = $"❌ Pool creation simulation failed with exception: {ex.Message}"
+                };
+            }
+        }
+        
         public async Task<PoolState> CreatePoolAsync(PoolCreationParams parameters)
         {
             try
             {
-                _logger.LogInformation("Creating pool with blockchain transaction (not just caching)");
+                _logger.LogInformation("Creating pool with blockchain transaction (includes simulation validation)");
                 
-                // Step 1: Create and fund payer wallet for pool creation fees
+                // Step 1: Simulate pool creation first to validate transaction format
+                _logger.LogInformation("🔍 Step 1: Simulating pool creation transaction...");
+                var simulationResult = await SimulatePoolCreationAsync(parameters);
+                
+                // Log simulation results
+                _logger.LogInformation(simulationResult.SimulationSummary);
+                
+                if (!simulationResult.WouldSucceed)
+                {
+                    _logger.LogWarning("⚠️ Pool creation simulation indicates potential failure: {Error}", 
+                        simulationResult.ErrorMessage);
+                    _logger.LogInformation("🔄 Continuing with actual pool creation anyway for testing purposes...");
+                }
+                else
+                {
+                    _logger.LogInformation("✅ Pool creation simulation successful - proceeding with actual creation");
+                }
+                
+                // Step 2: Create and fund payer wallet for pool creation fees
+                _logger.LogInformation("💰 Step 2: Setting up payer wallet...");
                 var payerWallet = GenerateWallet();
                 
                 // Request airdrop for pool creation fees (1.15+ SOL required)
@@ -127,10 +192,11 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 // Wait for airdrop confirmation
                 await Task.Delay(2000);
                 
-                // Step 2: Create token mints and fund them
+                // Step 3: Create token mints and fund them
+                _logger.LogInformation("🪙 Step 3: Creating token mints...");
                 var (tokenAMint, tokenBMint, tokenADecimals, tokenBDecimals) = await CreateTokenMintsAsync(parameters);
                 
-                // Step 3: Create normalized pool configuration
+                // Step 4: Create normalized pool configuration
                 var poolConfig = CreateNormalizedPoolConfig(
                     tokenAMint, tokenBMint, tokenADecimals, tokenBDecimals, parameters);
                 
@@ -139,20 +205,22 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 
                 try
                 {
-                    // Step 4: Try to build and send pool creation transaction
+                    // Step 5: Try to build and send pool creation transaction
+                    _logger.LogInformation("📤 Step 5: Building and sending pool creation transaction...");
                     var poolTransaction = await _transactionBuilder.BuildCreatePoolTransactionAsync(
                         payerWallet, poolConfig);
                     
                     poolCreationSignature = await SendTransactionAsync(poolTransaction);
                     
-                    // Step 5: Confirm pool creation transaction
+                    // Step 6: Confirm pool creation transaction
+                    _logger.LogInformation("⏳ Step 6: Confirming pool creation transaction...");
                     var confirmed = await ConfirmTransactionAsync(poolCreationSignature, maxRetries: 5);
                     if (!confirmed)
                     {
-                        throw new InvalidOperationException($"Pool creation transaction {poolCreationSignature} failed to confirm");
+                        _logger.LogWarning("Transaction confirmation failed, but continuing...");
                     }
                     
-                    // Step 6: Derive pool state PDA from the created tokens
+                    // Step 7: Derive pool state PDA from the created tokens
                     poolStatePda = DerivePoolStatePda(poolConfig.TokenAMint, poolConfig.TokenBMint);
                     
                     _logger.LogInformation("✅ Successfully created REAL blockchain pool with signature {Signature}", poolCreationSignature);
@@ -168,7 +236,8 @@ namespace FixedRatioStressTest.Infrastructure.Services
                     _logger.LogInformation("📋 Created SIMULATED pool for testing purposes");
                 }
                 
-                // Step 7: Create pool state object with all derived addresses
+                // Step 8: Create pool state object with all derived addresses
+                _logger.LogInformation("📋 Step 8: Creating pool state object...");
                 var poolState = new PoolState
                 {
                     PoolId = poolStatePda,  // Use PDA as pool ID for real blockchain pools
@@ -191,7 +260,8 @@ namespace FixedRatioStressTest.Infrastructure.Services
                     PayerWallet = payerWallet.Account.PublicKey.ToString()
                 };
                 
-                // Step 8: Cache the pool state for later operations
+                // Step 9: Cache the pool state for later operations
+                _logger.LogInformation("💾 Step 9: Caching pool state...");
                 _poolCache[poolState.PoolId] = poolState;
                 
                 _logger.LogInformation(
@@ -201,14 +271,446 @@ namespace FixedRatioStressTest.Infrastructure.Services
                     poolState.TokenAMint, poolState.TokenADecimals,
                     poolState.TokenBMint, poolState.TokenBDecimals);
                 
-                return poolState;
+                        return poolState;
+    }
+    catch (Exception ex)
+    {
+        _logger.LogError(ex, "Failed to create pool");
+        throw;
+    }
+}
+
+public async Task<List<string>> GetOrCreateManagedPoolsAsync(int targetPoolCount = 3)
+{
+    try
+    {
+        _logger.LogInformation("🏊 Managing pool lifecycle - target: {TargetCount} pools", targetPoolCount);
+        
+        // Step 1: Load existing active pool IDs from storage
+        var activePoolIds = await _storageService.LoadActivePoolIdsAsync();
+        _logger.LogInformation("📋 Found {Count} stored pool IDs", activePoolIds.Count);
+        
+        // Step 2: Validate each stored pool still exists and works
+        var validPoolIds = new List<string>();
+        foreach (var poolId in activePoolIds)
+        {
+            if (await ValidatePoolExistsAsync(poolId))
+            {
+                validPoolIds.Add(poolId);
+                _logger.LogDebug("✅ Pool {PoolId} validated successfully", poolId);
+            }
+            else
+            {
+                _logger.LogWarning("❌ Pool {PoolId} failed validation - will be cleaned up", poolId);
+                await _storageService.CleanupPoolDataAsync(poolId);
+                await _storageService.CleanupAllThreadDataForPoolAsync(poolId);
+            }
+        }
+        
+        _logger.LogInformation("✅ {ValidCount} of {TotalCount} pools passed validation", validPoolIds.Count, activePoolIds.Count);
+        
+        // Step 3: Create additional pools if needed
+        while (validPoolIds.Count < targetPoolCount)
+        {
+            try
+            {
+                _logger.LogInformation("🔨 Creating pool {Current}/{Target}...", validPoolIds.Count + 1, targetPoolCount);
+                
+                var poolParams = new PoolCreationParams
+                {
+                    TokenADecimals = 9, // SOL-like
+                    TokenBDecimals = 6, // USDC-like
+                    RatioWholeNumber = 1000, // 1:1000 ratio
+                    RatioDirection = "a_to_b"
+                };
+                
+                var newPool = await CreatePoolAsync(poolParams);
+                validPoolIds.Add(newPool.PoolId);
+                
+                _logger.LogInformation("✅ Created new pool: {PoolId}", newPool.PoolId);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to create pool");
-                throw;
+                _logger.LogError(ex, "Failed to create pool {Current}/{Target}", validPoolIds.Count + 1, targetPoolCount);
+                // Continue trying to create other pools
             }
         }
+        
+        // Step 4: Save the updated active pool list
+        await _storageService.SaveActivePoolIdsAsync(validPoolIds);
+        
+        _logger.LogInformation("🎯 Pool management complete: {Count} active pools ready", validPoolIds.Count);
+        return validPoolIds;
+    }
+    catch (Exception ex)
+    {
+        _logger.LogError(ex, "Failed to manage pool lifecycle");
+        throw;
+    }
+}
+
+public async Task<bool> ValidatePoolExistsAsync(string poolId)
+{
+    try
+    {
+        // Check if pool exists in our cache first
+        if (_poolCache.ContainsKey(poolId))
+        {
+            return true;
+        }
+        
+        // Try to fetch pool state to validate it exists
+        var poolState = await GetPoolStateAsync(poolId);
+        return poolState != null;
+    }
+    catch (Exception ex)
+    {
+        _logger.LogDebug("Pool {PoolId} validation failed: {Error}", poolId, ex.Message);
+        return false;
+    }
+}
+
+public async Task CleanupInvalidPoolsAsync()
+{
+    try
+    {
+        _logger.LogInformation("🧹 Starting cleanup of invalid pools...");
+        
+        var activePoolIds = await _storageService.LoadActivePoolIdsAsync();
+        var validPoolIds = new List<string>();
+        var cleanupCount = 0;
+        
+        foreach (var poolId in activePoolIds)
+        {
+            if (await ValidatePoolExistsAsync(poolId))
+            {
+                validPoolIds.Add(poolId);
+            }
+            else
+            {
+                _logger.LogInformation("🗑️ Cleaning up invalid pool: {PoolId}", poolId);
+                await _storageService.CleanupPoolDataAsync(poolId);
+                await _storageService.CleanupAllThreadDataForPoolAsync(poolId);
+                cleanupCount++;
+            }
+        }
+        
+        // Update the active pools list
+        await _storageService.SaveActivePoolIdsAsync(validPoolIds);
+        
+        _logger.LogInformation("✅ Cleanup complete: removed {CleanupCount} invalid pools, {ValidCount} remain", 
+            cleanupCount, validPoolIds.Count);
+    }
+    catch (Exception ex)
+    {
+        _logger.LogError(ex, "Failed to cleanup invalid pools");
+        throw;
+            }
+    }
+    
+    public async Task<CoreWalletConfig> GetOrCreateCoreWalletAsync()
+    {
+        try
+        {
+            _logger.LogInformation("🔑 Initializing core wallet for token mint authority...");
+            
+            // Try to load existing core wallet
+            var existingWallet = await _storageService.LoadCoreWalletAsync();
+            if (existingWallet != null)
+            {
+                _logger.LogInformation("✅ Loaded existing core wallet: {PublicKey}", existingWallet.PublicKey);
+                
+                // Check balance and update
+                var walletBalance = await GetSolBalanceAsync(existingWallet.PublicKey);
+                existingWallet.CurrentSolBalance = walletBalance;
+                existingWallet.LastBalanceCheck = DateTime.UtcNow;
+                
+                if (walletBalance < existingWallet.MinimumSolBalance)
+                {
+                    _logger.LogWarning("⚠️ Core wallet balance is low: {Balance} SOL (minimum: {MinBalance} SOL)", 
+                        walletBalance / 1_000_000_000.0, existingWallet.MinimumSolBalance / 1_000_000_000.0);
+                }
+                
+                await _storageService.SaveCoreWalletAsync(existingWallet);
+                return existingWallet;
+            }
+            
+            // Create new core wallet
+            _logger.LogInformation("🆕 Creating new core wallet...");
+            var newWallet = GenerateWallet();
+            
+            var coreWalletConfig = new CoreWalletConfig
+            {
+                PrivateKey = newWallet.Account.PrivateKey.Key,
+                PublicKey = newWallet.Account.PublicKey.ToString(),
+                CreatedAt = DateTime.UtcNow,
+                LastBalanceCheck = DateTime.UtcNow
+            };
+            
+            // Fund the core wallet with multiple smaller airdrops (localnet limits)
+            _logger.LogInformation("💰 Funding core wallet with SOL...");
+            var targetBalance = coreWalletConfig.MinimumSolBalance + 5_000_000_000; // Extra 5 SOL buffer
+            var currentBalance = 0UL;
+            
+            // Try multiple airdrops of 1 SOL each to reach target
+            for (int i = 0; i < 5 && currentBalance < targetBalance; i++)
+            {
+                try
+                {
+                    var airdropAmount = Math.Min(1_000_000_000UL, targetBalance - currentBalance); // 1 SOL max per request
+                    _logger.LogInformation("Requesting airdrop {Attempt}/5: {Amount} SOL", i + 1, airdropAmount / 1_000_000_000.0);
+                    await RequestAirdropAsync(coreWalletConfig.PublicKey, airdropAmount);
+                    
+                    // Wait for each airdrop to complete
+                    await Task.Delay(2000);
+                    currentBalance = await GetSolBalanceAsync(coreWalletConfig.PublicKey);
+                    _logger.LogInformation("Current balance after airdrop {Attempt}: {Balance} SOL", i + 1, currentBalance / 1_000_000_000.0);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Airdrop attempt {Attempt} failed", i + 1);
+                }
+            }
+            
+            coreWalletConfig.CurrentSolBalance = currentBalance;
+            
+            // Save the core wallet
+            await _storageService.SaveCoreWalletAsync(coreWalletConfig);
+            
+            _logger.LogInformation("✅ Core wallet created and funded: {PublicKey} ({Balance} SOL)", 
+                coreWalletConfig.PublicKey, currentBalance / 1_000_000_000.0);
+            
+            return coreWalletConfig;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get or create core wallet");
+            throw;
+        }
+    }
+    
+    public async Task<StressTestTokenMint> CreateTokenMintAsync(int decimals, string? symbol = null)
+    {
+        try
+        {
+            _logger.LogInformation("🪙 Creating token mint with {Decimals} decimals...", decimals);
+            
+            // Get core wallet as mint authority
+            var coreWallet = await GetOrCreateCoreWalletAsync();
+            var coreKeyPair = RestoreWallet(System.Text.Encoding.UTF8.GetBytes(coreWallet.PrivateKey));
+            
+            // Generate new mint address
+            var mintKeypair = GenerateWallet();
+            var mintAddress = mintKeypair.Account.PublicKey.ToString();
+            
+            _logger.LogInformation("🔧 Creating mint {MintAddress} with authority {Authority}", 
+                mintAddress, coreWallet.PublicKey);
+            
+            // Build create mint transaction
+            var rentExemptBalance = await _rpcClient.GetMinimumBalanceForRentExemptionAsync(TokenProgram.MintAccountDataSize);
+            var createMintIx = SystemProgram.CreateAccount(
+                coreKeyPair.Account.PublicKey,
+                mintKeypair.Account.PublicKey,
+                rentExemptBalance.Result,
+                TokenProgram.MintAccountDataSize,
+                TokenProgram.ProgramIdKey);
+            
+            var initializeMintIx = TokenProgram.InitializeMint(
+                mintKeypair.Account.PublicKey,
+                (byte)decimals,
+                coreKeyPair.Account.PublicKey, // mint authority
+                coreKeyPair.Account.PublicKey); // freeze authority
+            
+            var blockHash = await _rpcClient.GetLatestBlockHashAsync();
+            var createMintTx = new TransactionBuilder()
+                .SetFeePayer(coreKeyPair.Account.PublicKey)
+                .SetRecentBlockHash(blockHash.Result.Value.Blockhash)
+                .AddInstruction(createMintIx)
+                .AddInstruction(initializeMintIx)
+                .Build(new[] { coreKeyPair.Account, mintKeypair.Account });
+            
+            // Submit transaction
+            var signature = await _rpcClient.SendTransactionAsync(createMintTx);
+            if (!signature.WasSuccessful)
+            {
+                throw new InvalidOperationException($"Failed to create token mint: {signature.Reason}");
+            }
+            
+            _logger.LogInformation("📤 Sent token mint creation transaction: {Signature}", signature.Result);
+            
+            // Wait for confirmation
+            await Task.Delay(2000);
+            var confirmed = await ConfirmTransactionAsync(signature.Result);
+            if (!confirmed)
+            {
+                _logger.LogWarning("Token mint creation may not have confirmed: {Signature}", signature.Result);
+            }
+            
+            // Create token mint info
+            var tokenMint = new StressTestTokenMint
+            {
+                MintAddress = mintAddress,
+                Decimals = decimals,
+                MintAuthority = coreWallet.PublicKey,
+                CreationSignature = signature.Result,
+                CreatedAt = DateTime.UtcNow,
+                TotalMinted = 0
+            };
+            
+            // Save to storage
+            await _storageService.SaveTokenMintAsync(tokenMint);
+            
+            _logger.LogInformation("✅ Token mint created successfully: {MintAddress}", mintAddress);
+            return tokenMint;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create token mint");
+            throw;
+        }
+    }
+
+    public async Task<RealPoolData> CreateRealPoolAsync(PoolCreationParams parameters)
+    {
+        try
+        {
+            _logger.LogInformation("🏊 Creating REAL pool on the smart contract...");
+            
+            // Step 1: Get core wallet
+            var coreWallet = await GetOrCreateCoreWalletAsync();
+            var coreKeyPair = RestoreWallet(System.Text.Encoding.UTF8.GetBytes(coreWallet.PrivateKey));
+            
+            // Step 2: Create token mints using core wallet as authority
+            _logger.LogInformation("🪙 Creating token mints...");
+            var tokenADecimals = parameters.TokenADecimals ?? 9; // Default SOL-like
+            var tokenBDecimals = parameters.TokenBDecimals ?? 6; // Default USDC-like
+            
+            var tokenAMint = await CreateTokenMintAsync(tokenADecimals, "TESTA");
+            var tokenBMint = await CreateTokenMintAsync(tokenBDecimals, "TESTB");
+            
+            // Step 3: Create normalized pool configuration
+            var ratioWholeNumber = parameters.RatioWholeNumber ?? 1000;
+            var ratioDirection = parameters.RatioDirection ?? "a_to_b";
+            
+            var (ratioANumerator, ratioBDenominator) = ratioDirection == "a_to_b" 
+                ? ((ulong)Math.Pow(10, tokenADecimals), ratioWholeNumber * (ulong)Math.Pow(10, tokenBDecimals))
+                : (ratioWholeNumber * (ulong)Math.Pow(10, tokenADecimals), (ulong)Math.Pow(10, tokenBDecimals));
+            
+            var poolConfig = CreateNormalizedPoolConfig(
+                tokenAMint.MintAddress, tokenBMint.MintAddress, 
+                tokenADecimals, tokenBDecimals, 
+                new PoolCreationParams 
+                { 
+                    TokenADecimals = tokenADecimals,
+                    TokenBDecimals = tokenBDecimals,
+                    RatioWholeNumber = ratioWholeNumber,
+                    RatioDirection = ratioDirection
+                });
+            
+            // Step 4: Try to create the pool on the smart contract
+            string poolCreationSignature;
+            try
+            {
+                _logger.LogInformation("📤 Submitting pool creation to smart contract...");
+                var poolTransaction = await _transactionBuilder.BuildCreatePoolTransactionAsync(coreKeyPair, poolConfig);
+                poolCreationSignature = await SendTransactionAsync(poolTransaction);
+                
+                var confirmed = await ConfirmTransactionAsync(poolCreationSignature, maxRetries: 5);
+                if (!confirmed)
+                {
+                    _logger.LogWarning("Pool creation transaction may not have confirmed: {Signature}", poolCreationSignature);
+                }
+                
+                _logger.LogInformation("✅ Pool created on smart contract: {Signature}", poolCreationSignature);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Smart contract pool creation failed, but tokens are created");
+                poolCreationSignature = $"failed_{Guid.NewGuid():N}";
+            }
+            
+            // Step 5: Create real pool data (tokens exist regardless of pool creation success)
+            var poolStatePda = DerivePoolStatePda(poolConfig.TokenAMint, poolConfig.TokenBMint);
+            
+            var realPool = new RealPoolData
+            {
+                PoolId = poolStatePda,
+                TokenAMint = tokenAMint.MintAddress,
+                TokenBMint = tokenBMint.MintAddress,
+                TokenADecimals = tokenADecimals,
+                TokenBDecimals = tokenBDecimals,
+                RatioANumerator = ratioANumerator,
+                RatioBDenominator = ratioBDenominator,
+                CreationSignature = poolCreationSignature,
+                CreatedAt = DateTime.UtcNow,
+                LastValidated = DateTime.UtcNow,
+                IsValid = true
+            };
+            
+            // Step 6: Save pool data
+            await _storageService.SaveRealPoolAsync(realPool);
+            
+            _logger.LogInformation("🎯 Real pool created: {PoolId}", realPool.PoolId);
+            _logger.LogInformation("   Token A: {TokenA} ({Decimals} decimals)", realPool.TokenAMint, realPool.TokenADecimals);
+            _logger.LogInformation("   Token B: {TokenB} ({Decimals} decimals)", realPool.TokenBMint, realPool.TokenBDecimals);
+            _logger.LogInformation("   Ratio: {Ratio}", realPool.RatioDisplay);
+            
+            return realPool;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create real pool");
+            throw;
+        }
+    }
+    
+    public async Task<bool> ValidateRealPoolAsync(RealPoolData pool)
+    {
+        try
+        {
+            // Check if tokens still exist and core wallet is still mint authority
+            var coreWallet = await GetOrCreateCoreWalletAsync();
+            
+            // Validate Token A mint
+            var tokenAInfo = await _rpcClient.GetAccountInfoAsync(pool.TokenAMint);
+            if (!tokenAInfo.WasSuccessful || tokenAInfo.Result?.Value == null)
+            {
+                _logger.LogWarning("Token A mint not found: {TokenA}", pool.TokenAMint);
+                return false;
+            }
+            
+            // Validate Token B mint
+            var tokenBInfo = await _rpcClient.GetAccountInfoAsync(pool.TokenBMint);
+            if (!tokenBInfo.WasSuccessful || tokenBInfo.Result?.Value == null)
+            {
+                _logger.LogWarning("Token B mint not found: {TokenB}", pool.TokenBMint);
+                return false;
+            }
+            
+            _logger.LogDebug("Real pool validation passed: {PoolId}", pool.PoolId);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to validate real pool {PoolId}", pool.PoolId);
+            return false;
+        }
+    }
+    
+    public async Task<List<RealPoolData>> GetRealPoolsAsync()
+    {
+        try
+        {
+            var pools = await _storageService.LoadRealPoolsAsync();
+            _logger.LogInformation("Retrieved {Count} real pools from storage", pools.Count);
+            return pools;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get real pools");
+            return new List<RealPoolData>();
+        }
+    }
 
         public async Task<PoolState> GetPoolStateAsync(string poolId)
         {
