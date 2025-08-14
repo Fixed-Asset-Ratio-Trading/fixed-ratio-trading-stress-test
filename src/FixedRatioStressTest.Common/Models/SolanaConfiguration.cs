@@ -49,6 +49,7 @@ namespace FixedRatioStressTest.Common.Models
         public int MaxRetries { get; set; } = 3;
         public int TimeoutMs { get; set; } = 30000;
         public bool UseNgrokEndpoint { get; set; } = false;
+        public bool SkipPreflight { get; set; } = false;
         
         public string GetActiveRpcUrl()
         {

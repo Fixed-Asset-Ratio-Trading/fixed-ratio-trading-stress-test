@@ -23,10 +23,15 @@ public interface ITransactionBuilderService
         Wallet payer,
         PoolConfig poolConfig);
 
-    /// <summary>
-    /// Derive the system state PDA for validation
-    /// </summary>
-    PublicKey DeriveSystemStatePda();
+            /// <summary>
+        /// Derive the system state PDA for validation
+        /// </summary>
+        PublicKey DeriveSystemStatePda();
+        
+        /// <summary>
+        /// Build InitializeProgram transaction to initialize treasury system
+        /// </summary>
+        Task<byte[]> BuildInitializeProgramTransactionAsync(Account systemAuthority);
     
     /// <summary>
     /// Builds a transaction for depositing tokens into a pool

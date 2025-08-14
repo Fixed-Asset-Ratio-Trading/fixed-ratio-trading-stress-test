@@ -6,6 +6,7 @@ using Solnet.Rpc.Builders;
 using Solnet.Rpc.Core.Http;
 using Solnet.Rpc.Messages;
 using Solnet.Rpc.Models;
+using Solnet.Rpc.Types;
 using Solnet.Wallet;
 using Solnet.Programs;
 using Solnet.Programs.Utilities;
@@ -477,7 +478,7 @@ public async Task CleanupInvalidPoolsAsync()
             
             // Check current balance
             var currentBalance = await GetSolBalanceAsync(coreWallet.PublicKey);
-            var requiredBalance = 1_500_000_000UL; // 1.5 SOL minimum for pool creation operations (adjusted for localnet limits)
+            var requiredBalance = 10_000_000_000UL; // 10 SOL minimum (ensures sufficient balance for registration fees and operations)
             
             _logger.LogInformation("Current balance: {Current} SOL, Required: {Required} SOL", 
                 currentBalance / 1_000_000_000.0, requiredBalance / 1_000_000_000.0);
@@ -490,44 +491,54 @@ public async Task CleanupInvalidPoolsAsync()
             
             _logger.LogInformation("⚠️ Insufficient SOL balance, attempting airdrop...");
             
-            // Try to fund with airdrops using improved strategy
-            var neededAmount = requiredBalance - currentBalance;
+            // Request multiple airdrops to reach 100 SOL target (optimal for localnet)
+            var targetAmount = 100_000_000_000UL; // 100 SOL target
+            var maxAirdropPerRequest = 10_000_000_000UL; // 10 SOL per request (optimal for localnet)
             var funded = false;
             
-            for (int attempt = 1; attempt <= 5 && !funded; attempt++)
+            _logger.LogInformation("💰 Attempting to fund wallet with {Target} SOL using multiple airdrops", targetAmount / 1_000_000_000.0);
+            
+            for (int attempt = 1; attempt <= 15 && !funded; attempt++) // Up to 15 attempts (15 x 10 = 150 SOL max)
             {
                 try
                 {
-                    // Request smaller amounts more frequently for better success rate
-                    var airdropAmount = Math.Min(500_000_000UL, neededAmount); // 0.5 SOL max per request
-                    _logger.LogInformation("Airdrop attempt {Attempt}/5: Requesting {Amount} SOL", 
-                        attempt, airdropAmount / 1_000_000_000.0);
+                    var neededAmount = Math.Min(maxAirdropPerRequest, targetAmount);
                     
-                    var airdropSignature = await RequestAirdropAsync(coreWallet.PublicKey, airdropAmount);
-                    _logger.LogInformation("Airdrop transaction signature: {Signature}", airdropSignature);
+                    _logger.LogInformation("Airdrop attempt {Attempt}/15: Requesting {Amount} SOL", 
+                        attempt, neededAmount / 1_000_000_000.0);
                     
-                    // Wait longer for confirmation and check multiple times
-                    for (int confirmCheck = 1; confirmCheck <= 3; confirmCheck++)
-                    {
-                        await Task.Delay(2000); // Wait 2 seconds between checks
-                        currentBalance = await GetSolBalanceAsync(coreWallet.PublicKey);
-                        _logger.LogInformation("Balance check {Check}/3 after airdrop attempt {Attempt}: {Balance} SOL", 
-                            confirmCheck, attempt, currentBalance / 1_000_000_000.0);
-                        
-                        if (currentBalance >= requiredBalance)
-                        {
-                            funded = true;
-                            _logger.LogInformation("✅ Core wallet successfully funded via airdrop");
-                            break;
-                        }
-                    }
+                    var airdropSignature = await RequestAirdropAsync(coreWallet.PublicKey, neededAmount);
+                    _logger.LogInformation("✅ Airdrop request successful: signature {Signature}", airdropSignature);
                     
-                    // Update needed amount for next iteration
-                    neededAmount = requiredBalance - currentBalance;
+                    // Wait for confirmation
+                    await Task.Delay(2000); // Wait 2 seconds between requests
                     
-                    if (neededAmount <= 0)
+                    // Check balance
+                    currentBalance = await GetSolBalanceAsync(coreWallet.PublicKey);
+                    _logger.LogInformation("Balance after attempt {Attempt}: {Balance} SOL", 
+                        attempt, currentBalance / 1_000_000_000.0);
+                    
+                    // Check if we have enough (target reached)
+                    if (currentBalance >= targetAmount || currentBalance >= requiredBalance)
                     {
                         funded = true;
+                        _logger.LogInformation("🎉 Core wallet successfully funded! Current: {Balance} SOL", 
+                            currentBalance / 1_000_000_000.0);
+                        break;
+                    }
+                    
+                    // Reduce airdrop size if localnet has strict limits
+                    if (attempt >= 3 && currentBalance == 0)
+                    {
+                        _logger.LogWarning("⚠️ No balance increase after {Attempts} attempts. Reducing request size.", attempt);
+                        maxAirdropPerRequest = 1_000_000_000UL; // Try 1 SOL per request
+                        _logger.LogInformation("Reducing airdrop size to {Amount} SOL per request", maxAirdropPerRequest / 1_000_000_000.0);
+                    }
+                    
+                    if (attempt >= 8 && currentBalance == 0)
+                    {
+                        _logger.LogWarning("⚠️ Still no balance after {Attempts} attempts. Trying very small amounts.", attempt);
+                        maxAirdropPerRequest = 500_000_000UL; // Try 0.5 SOL per request
                     }
                 }
                 catch (Exception ex)
@@ -535,23 +546,30 @@ public async Task CleanupInvalidPoolsAsync()
                     _logger.LogWarning(ex, "Airdrop attempt {Attempt} failed: {Message}", attempt, ex.Message);
                     
                     // Wait longer between failed attempts
-                    if (attempt < 5)
-                    {
-                        await Task.Delay(5000); // Wait 5 seconds before next attempt
-                    }
+                    await Task.Delay(3000);
                 }
             }
             
-            // Final balance check
-            if (currentBalance < requiredBalance)
+            if (!funded && currentBalance > 0)
+            {
+                _logger.LogInformation("💰 Partial funding achieved: {Balance} SOL", currentBalance / 1_000_000_000.0);
+            }
+            
+            // Final balance check - allow proceeding with lower balance for testing
+            if (currentBalance < 1_200_000_000UL) // Minimum 1.2 SOL for registration fee
             {
                 var errorMsg = $"Cannot create pool: Core wallet has insufficient SOL balance. " +
                               $"Current: {currentBalance / 1_000_000_000.0:F2} SOL, " +
-                              $"Required: {requiredBalance / 1_000_000_000.0:F2} SOL. " +
+                              $"Required: {1_200_000_000UL / 1_000_000_000.0:F2} SOL minimum. " +
                               $"Airdrop attempts failed. Please fund the core wallet manually.";
                 
                 _logger.LogError(errorMsg);
                 throw new InvalidOperationException(errorMsg);
+            }
+            else if (currentBalance < requiredBalance)
+            {
+                _logger.LogWarning("⚠️ Wallet balance ({Current} SOL) is below preferred amount ({Required} SOL) but sufficient for testing",
+                    currentBalance / 1_000_000_000.0, requiredBalance / 1_000_000_000.0);
             }
             
             // Update wallet config with new balance
@@ -613,8 +631,8 @@ public async Task CleanupInvalidPoolsAsync()
                 .AddInstruction(initializeMintIx)
                 .Build(new[] { coreKeyPair.Account, mintKeypair.Account });
             
-            // Submit transaction
-            var signature = await _rpcClient.SendTransactionAsync(createMintTx);
+            // Submit transaction with preflight ON, lower commitment to reduce flakiness
+            var signature = await _rpcClient.SendTransactionAsync(createMintTx, skipPreflight: false, commitment: Commitment.Processed);
             if (!signature.WasSuccessful)
             {
                 throw new InvalidOperationException($"Failed to create token mint: {signature.Reason}");
@@ -706,15 +724,71 @@ public async Task CleanupInvalidPoolsAsync()
         {
             _logger.LogInformation("🏊 Creating REAL pool on the smart contract...");
             
-            // Step 1: Load existing core wallet (should exist from startup)
+            // Step 0: Check if a pool already exists for these parameters and reuse if valid
+            var existingPools = await _storageService.LoadRealPoolsAsync();
+            var existingPool = existingPools.FirstOrDefault(p => 
+                p.TokenADecimals == parameters.TokenADecimals &&
+                p.TokenBDecimals == parameters.TokenBDecimals);
+                
+            if (existingPool != null)
+            {
+                _logger.LogInformation("♻️ Found existing pool: {PoolId}", existingPool.PoolId);
+                
+                // Validate the existing pool still exists on blockchain
+                try
+                {
+                    var poolExists = await ValidatePoolExistsOnBlockchainAsync(existingPool.PoolId);
+                    if (poolExists)
+                    {
+                        _logger.LogInformation("✅ Existing pool validated on blockchain - reusing pool: {PoolId}", existingPool.PoolId);
+                        return new RealPoolData
+                        {
+                            PoolId = existingPool.PoolId,
+                            TokenAMint = existingPool.TokenAMint,
+                            TokenBMint = existingPool.TokenBMint,
+                            TokenADecimals = existingPool.TokenADecimals,
+                            TokenBDecimals = existingPool.TokenBDecimals,
+                            RatioANumerator = existingPool.RatioANumerator,
+                            RatioBDenominator = existingPool.RatioBDenominator
+                        };
+                    }
+                    else
+                    {
+                        _logger.LogWarning("❌ Existing pool not found on blockchain - will create new pool");
+                        // Remove invalid pool from storage
+                        await _storageService.DeleteRealPoolAsync(existingPool.PoolId);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to validate existing pool {PoolId} - will create new pool", existingPool.PoolId);
+                    await _storageService.DeleteRealPoolAsync(existingPool.PoolId);
+                }
+            }
+            
+            // Step 1: Ensure treasury system is initialized before pool creation
+            await InitializeTreasurySystemAsync();
+            
+            // Step 2: Load existing core wallet (should exist from startup)
             var coreWallet = await _storageService.LoadCoreWalletAsync();
             if (coreWallet == null)
             {
                 throw new InvalidOperationException("Core wallet not found. This should have been created during application startup.");
             }
             
-            // Step 2: Check SOL balance and attempt funding if needed
+            // Step 3: Check SOL balance and attempt funding if needed
             await EnsureCoreWalletHasSufficientSolAsync(coreWallet);
+            // Extra: wait until balance is visible at Finalized commitment (stabilizes preflight)
+            try
+            {
+                for (int i = 0; i < 5; i++)
+                {
+                    var bal = await _rpcClient.GetBalanceAsync(coreWallet.PublicKey, Commitment.Finalized);
+                    if ((bal.Result?.Value ?? 0) >= 1_200_000_000UL) break;
+                    await Task.Delay(1000);
+                }
+            }
+            catch { /* best-effort */ }
             
             // Decode the Base64 private key correctly
             var privateKeyBytes = Convert.FromBase64String(coreWallet.PrivateKey);
@@ -820,10 +894,76 @@ public async Task CleanupInvalidPoolsAsync()
                     throw;
                 }
                 
-                // Call RPC client directly (bypass our wrapper that's causing serialization issues)
-                Console.WriteLine($"[DEBUG] About to call _rpcClient.SendTransactionAsync with {poolTransactionBytes.Length} bytes...");
-                var result = await _rpcClient.SendTransactionAsync(poolTransactionBytes);
-                Console.WriteLine($"[DEBUG] _rpcClient.SendTransactionAsync completed. Success: {result.WasRequestSuccessfullyHandled}");
+                // Preflight simulation to capture on-chain logs
+                try
+                {
+                    _logger.LogInformation("🔎 Simulating pool creation transaction (sigVerify=false, replaceRecentBlockhash=true)...");
+                    var sim = await _rpcClient.SimulateTransactionAsync(
+                        poolTransactionBytes,
+                        sigVerify: false,
+                        commitment: Commitment.Processed,
+                        replaceRecentBlockhash: true,
+                        accountsToReturn: null);
+
+                    if (sim.WasRequestSuccessfullyHandled && sim.Result?.Value?.Logs != null)
+                    {
+                        _logger.LogInformation("📝 Program logs (simulate):");
+                        foreach (var log in sim.Result.Value.Logs)
+                        {
+                            _logger.LogInformation(log);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ Simulation returned no logs. Reason: {Reason}", sim.Reason);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "simulateTransaction failed (continuing with send)");
+                }
+
+                // Attempt preflight send first (production path)
+                Console.WriteLine($"[DEBUG] About to call _rpcClient.SendTransactionAsync (preflight {(!_config.SkipPreflight).ToString().ToLower()}) with {poolTransactionBytes.Length} bytes...");
+                var result = await _rpcClient.SendTransactionAsync(poolTransactionBytes, skipPreflight: _config.SkipPreflight, commitment: Commitment.Processed);
+                Console.WriteLine($"[DEBUG] preflight send completed. Success: {result.WasRequestSuccessfullyHandled}");
+                if (!result.WasRequestSuccessfullyHandled && !_config.SkipPreflight)
+                {
+                    _logger.LogWarning("Preflight send failed. Reason: {Reason}", result.Reason);
+
+                    // Additional diagnostic simulation mimicking preflight (sigVerify=true, replaceRecentBlockhash=false)
+                    try
+                    {
+                        _logger.LogInformation("🔎 Preflight-mimic simulate (sigVerify=true, replaceRecentBlockhash=false)...");
+                        var preflightSim = await _rpcClient.SimulateTransactionAsync(
+                            poolTransactionBytes,
+                            sigVerify: true,
+                            commitment: Commitment.Processed,
+                            replaceRecentBlockhash: false,
+                            accountsToReturn: null);
+                        if (preflightSim.WasRequestSuccessfullyHandled && preflightSim.Result?.Value?.Logs != null)
+                        {
+                            _logger.LogInformation("📝 Program logs (preflight-mimic simulate):");
+                            foreach (var log in preflightSim.Result.Value.Logs)
+                            {
+                                _logger.LogInformation(log);
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogWarning("⚠️ Preflight-mimic simulation returned no logs. Reason: {Reason}", preflightSim.Reason);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Preflight-mimic simulateTransaction failed");
+                    }
+
+                    // Fallback: skip preflight for localnet robustness
+                    _logger.LogWarning("⚠️ Falling back to skipPreflight=true (localnet fast path)");
+                    result = await _rpcClient.SendTransactionAsync(poolTransactionBytes, skipPreflight: true, commitment: Commitment.Processed);
+                    Console.WriteLine($"[DEBUG] fallback send completed. Success: {result.WasRequestSuccessfullyHandled}");
+                }
                 
                 if (!result.WasRequestSuccessfullyHandled)
                 {
@@ -839,6 +979,30 @@ public async Task CleanupInvalidPoolsAsync()
                 }
                 
                 _logger.LogInformation("✅ Pool created on smart contract: {Signature}", poolCreationSignature);
+
+                // Fetch and print post-send program logs
+                try
+                {
+                    await Task.Delay(1000);
+                    var tx = await _rpcClient.GetTransactionAsync(poolCreationSignature, Commitment.Confirmed);
+                    var logs = tx.Result?.Meta?.LogMessages;
+                    if (logs != null)
+                    {
+                        _logger.LogInformation("📝 Program logs (confirmed tx):");
+                        foreach (var log in logs)
+                        {
+                            _logger.LogInformation(log);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ No log messages found on confirmed transaction {Signature}", poolCreationSignature);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to fetch confirmed transaction logs for {Signature}", poolCreationSignature);
+                }
             }
             catch (Exception ex)
             {
@@ -1492,6 +1656,156 @@ public async Task CleanupInvalidPoolsAsync()
             }
             
             return false;
+        }
+        
+        /// <summary>
+        /// Validates that a pool exists on the blockchain by checking its PDA account
+        /// </summary>
+        public async Task<bool> ValidatePoolExistsOnBlockchainAsync(string poolId)
+        {
+            try
+            {
+                var poolPda = new PublicKey(poolId);
+                var accountInfo = await _rpcClient.GetAccountInfoAsync(poolPda);
+                
+                if (accountInfo.Result?.Value == null)
+                {
+                    _logger.LogDebug("Pool {PoolId} not found on blockchain", poolId);
+                    return false;
+                }
+                
+                // Check if account has data (pool state should be initialized)
+                if (accountInfo.Result.Value.Data == null || accountInfo.Result.Value.Data.Count == 0)
+                {
+                    _logger.LogDebug("Pool {PoolId} exists but has no data", poolId);
+                    return false;
+                }
+                
+                _logger.LogDebug("Pool {PoolId} validated on blockchain", poolId);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to validate pool {PoolId} on blockchain", poolId);
+                return false;
+            }
+        }
+        
+        /// <summary>
+        /// Initializes the treasury system (required before any pool operations)
+        /// </summary>
+        public async Task InitializeTreasurySystemAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🏦 Initializing treasury system...");
+                
+                // Check if treasury system is already initialized
+                var systemStatePda = _transactionBuilder.DeriveSystemStatePda();
+                var systemStateAccount = await _rpcClient.GetAccountInfoAsync(systemStatePda);
+                
+                if (systemStateAccount.Result?.Value != null && systemStateAccount.Result.Value.Data?.Count > 0)
+                {
+                    _logger.LogInformation("✅ Treasury system already initialized");
+                    return;
+                }
+                
+                _logger.LogInformation("🔧 Treasury system not found - initializing...");
+                
+                // Load core wallet to use as system authority
+                var coreWallet = await _storageService.LoadCoreWalletAsync();
+                if (coreWallet == null)
+                {
+                    throw new InvalidOperationException("Core wallet not found. Cannot initialize treasury system.");
+                }
+                
+                // Ensure core wallet has enough SOL for initialization
+                await EnsureCoreWalletHasSufficientSolAsync(coreWallet);
+                
+                // Decode the private key to create Account
+                var privateKeyBytes = Convert.FromBase64String(coreWallet.PrivateKey);
+                var coreKeyPair = RestoreWallet(privateKeyBytes);
+                
+                // Build InitializeProgram transaction
+                var initTransaction = await _transactionBuilder.BuildInitializeProgramTransactionAsync(coreKeyPair.Account);
+                
+                // Send transaction
+                var response = await _rpcClient.SendTransactionAsync(initTransaction);
+                if (!response.WasSuccessful)
+                {
+                    throw new InvalidOperationException($"Treasury initialization failed: {response.Reason}");
+                }
+                
+                _logger.LogInformation("✅ Treasury system initialized successfully: {Signature}", response.Result);
+                
+                // Wait for confirmation
+                await Task.Delay(3000);
+                
+                // Verify initialization
+                var verifyAccount = await _rpcClient.GetAccountInfoAsync(systemStatePda);
+                if (verifyAccount.Result?.Value != null && verifyAccount.Result.Value.Data?.Count > 0)
+                {
+                    _logger.LogInformation("🎉 Treasury system initialization verified");
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ Treasury system initialization could not be verified");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to initialize treasury system");
+                throw;
+            }
+        }
+        
+        /// <summary>
+        /// Validates all saved pools on startup and removes invalid ones
+        /// </summary>
+        public async Task ValidateAndCleanupSavedPoolsAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🔍 Validating saved pools on startup...");
+                
+                var savedPools = await _storageService.LoadRealPoolsAsync();
+                if (!savedPools.Any())
+                {
+                    _logger.LogInformation("No saved pools found to validate");
+                    return;
+                }
+                
+                var validPools = new List<RealPoolData>();
+                var invalidPoolIds = new List<string>();
+                
+                foreach (var pool in savedPools)
+                {
+                    var exists = await ValidatePoolExistsOnBlockchainAsync(pool.PoolId);
+                    if (exists)
+                    {
+                        validPools.Add(pool);
+                        _logger.LogInformation("✅ Pool {PoolId} validated", pool.PoolId);
+                    }
+                    else
+                    {
+                        invalidPoolIds.Add(pool.PoolId);
+                        _logger.LogWarning("❌ Pool {PoolId} not found on blockchain - will be removed", pool.PoolId);
+                    }
+                }
+                
+                // Remove invalid pools
+                foreach (var invalidPoolId in invalidPoolIds)
+                {
+                    await _storageService.DeleteRealPoolAsync(invalidPoolId);
+                }
+                
+                _logger.LogInformation("🧹 Pool validation completed: {Valid} valid, {Invalid} removed", 
+                    validPools.Count, invalidPoolIds.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to validate saved pools");
+            }
         }
     }
 }

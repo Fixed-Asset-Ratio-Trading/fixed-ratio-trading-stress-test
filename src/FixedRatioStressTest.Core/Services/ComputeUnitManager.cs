@@ -18,10 +18,11 @@ namespace FixedRatioStressTest.Core.Services
         // Production-tested CU requirements from dashboard
         private readonly Dictionary<string, uint> _computeUnits = new()
         {
+            ["process_initialize_program"] = 200_000,  // Treasury system initialization
             ["process_liquidity_deposit"] = 310_000,  // Min observed: 249K
             ["process_liquidity_withdraw"] = 290_000, // Min observed: 227K
             ["process_swap_execute"] = 250_000,       // Min observed: 202K
-            ["process_pool_initialize"] = 150_000,    // Min observed: 91K
+            ["process_pool_initialize"] = 195_000,    // Dashboard uses 195K (was 150K)
             ["process_consolidate_pool_fees"] = 150_000,
             ["process_treasury_donate_sol"] = 150_000,
             ["process_system_pause"] = 150_000,

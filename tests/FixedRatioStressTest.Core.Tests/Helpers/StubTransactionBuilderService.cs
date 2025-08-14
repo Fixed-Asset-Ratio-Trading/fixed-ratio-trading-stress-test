@@ -92,9 +92,16 @@ public class StubTransactionBuilderService : ITransactionBuilderService
         return Task.FromResult($"stub_ata_{Guid.NewGuid():N}");
     }
 
-    public PublicKey DeriveSystemStatePda()
-    {
-        // Return a stub system state PDA
-        return new PublicKey("11111111111111111111111111111111");
-    }
+            public PublicKey DeriveSystemStatePda()
+        {
+            // Return a stub system state PDA
+            return new PublicKey("11111111111111111111111111111111");
+        }
+        
+        public async Task<byte[]> BuildInitializeProgramTransactionAsync(Account systemAuthority)
+        {
+            // Return a stub transaction for testing
+            await Task.Delay(1);
+            return new byte[] { 0x01, 0x02, 0x03, 0x04 };
+        }
 }

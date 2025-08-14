@@ -133,7 +133,7 @@ public class RealPoolCreationTests : IDisposable
         {
             TokenADecimals = 9,  // SOL-like
             TokenBDecimals = 6,  // USDC-like
-            RatioWholeNumber = 1,  // 1:1 ratio (1 TokenA = 1 TokenB)
+            RatioWholeNumber = 2,  // 1:2 ratio (1 TokenA = 2 TokenB) - SimpleRatio with one side = 1
             RatioDirection = "a_to_b"
         };
 

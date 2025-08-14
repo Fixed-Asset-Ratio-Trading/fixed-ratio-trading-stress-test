@@ -50,14 +50,24 @@ public class TransactionBuilderService : ITransactionBuilderService
                 
                 var programId = new PublicKey(_config.ProgramId);
                 var systemStatePda = DeriveSystemStatePda();
-                var poolStatePda = DerivePoolStatePda(poolConfig.TokenAMint, poolConfig.TokenBMint);
+                
+                // Calculate basis points first since we need them for PDA derivation
+                var (ratioANumerator, ratioBDenominator) = CalculateBasisPoints(
+                    poolConfig.TokenAMint, poolConfig.TokenBMint,
+                    poolConfig.TokenADecimals, poolConfig.TokenBDecimals,
+                    poolConfig.RatioWholeNumber, poolConfig.RatioDirection);
+
+                // CRITICAL: Normalize token order for both PDA seeds and account slots [7] and [8]
+                var (normalizedTokenA, normalizedTokenB) = GetOrderedTokens(poolConfig.TokenAMint, poolConfig.TokenBMint);
+
+                var poolStatePda = DerivePoolStatePda(normalizedTokenA, normalizedTokenB, ratioANumerator, ratioBDenominator);
                 var mainTreasuryPda = DeriveMainTreasuryPda();
                 
-                // Derive vault and LP mint PDAs
-                var tokenAVaultPda = DeriveTokenVaultPda(poolStatePda, poolConfig.TokenAMint);
-                var tokenBVaultPda = DeriveTokenVaultPda(poolStatePda, poolConfig.TokenBMint);
-                var lpTokenAMintPda = DeriveLpMintPda(poolStatePda, poolConfig.TokenAMint);
-                var lpTokenBMintPda = DeriveLpMintPda(poolStatePda, poolConfig.TokenBMint);
+                // Derive vault and LP mint PDAs using dashboard-exact methods
+                var tokenAVaultPda = DeriveTokenAVaultPda(poolStatePda);
+                var tokenBVaultPda = DeriveTokenBVaultPda(poolStatePda);
+                var lpTokenAMintPda = DeriveLpTokenAMintPda(poolStatePda);
+                var lpTokenBMintPda = DeriveLpTokenBMintPda(poolStatePda);
                 
                 // Build account structure per API documentation
                 var accounts = new List<AccountMeta>
@@ -76,10 +86,10 @@ public class TransactionBuilderService : ITransactionBuilderService
                     AccountMeta.Writable(mainTreasuryPda, false),
                     // [6] Rent Sysvar
                     AccountMeta.ReadOnly(new PublicKey("SysvarRent111111111111111111111111111111111"), false),
-                    // [7] Token A Mint
-                    AccountMeta.ReadOnly(new PublicKey(poolConfig.TokenAMint), false),
-                    // [8] Token B Mint
-                    AccountMeta.ReadOnly(new PublicKey(poolConfig.TokenBMint), false),
+                    // [7] Token A Mint (normalized/ordered)
+                    AccountMeta.ReadOnly(new PublicKey(normalizedTokenA), false),
+                    // [8] Token B Mint (normalized/ordered)
+                    AccountMeta.ReadOnly(new PublicKey(normalizedTokenB), false),
                     // [9] Token A Vault PDA (to create)
                     AccountMeta.Writable(tokenAVaultPda, false),
                     // [10] Token B Vault PDA (to create)
@@ -90,11 +100,7 @@ public class TransactionBuilderService : ITransactionBuilderService
                     AccountMeta.Writable(lpTokenBMintPda, false)
                 };
                 
-                // Calculate proper basis points using the same logic as JavaScript implementation
-                var (ratioANumerator, ratioBDenominator) = CalculateBasisPoints(
-                    poolConfig.TokenAMint, poolConfig.TokenBMint,
-                    poolConfig.TokenADecimals, poolConfig.TokenBDecimals,
-                    poolConfig.RatioWholeNumber, poolConfig.RatioDirection);
+                // Use the basis points calculated above for instruction data
 
                 // Create instruction data with CORRECT discriminator (matches JavaScript)
                 Console.WriteLine($"[DEBUG] Creating instruction data: RatioA={ratioANumerator}, RatioB={ratioBDenominator}");
@@ -155,14 +161,24 @@ public class TransactionBuilderService : ITransactionBuilderService
                 
                 var programId = new PublicKey(_config.ProgramId);
                 var systemStatePda = DeriveSystemStatePda();
-                var poolStatePda = DerivePoolStatePda(poolConfig.TokenAMint, poolConfig.TokenBMint);
+                
+                // Calculate basis points for consistent PDA derivation
+                var (ratioANumerator, ratioBDenominator) = CalculateBasisPoints(
+                    poolConfig.TokenAMint, poolConfig.TokenBMint,
+                    poolConfig.TokenADecimals, poolConfig.TokenBDecimals,
+                    poolConfig.RatioWholeNumber, poolConfig.RatioDirection);
+
+                // CRITICAL: Normalize token order for both PDA seeds and account slots [7] and [8]
+                var (normalizedTokenA, normalizedTokenB) = GetOrderedTokens(poolConfig.TokenAMint, poolConfig.TokenBMint);
+
+                var poolStatePda = DerivePoolStatePda(normalizedTokenA, normalizedTokenB, ratioANumerator, ratioBDenominator);
                 var mainTreasuryPda = DeriveMainTreasuryPda();
                 
-                // Derive vault and LP mint PDAs
-                var tokenAVaultPda = DeriveTokenVaultPda(poolStatePda, poolConfig.TokenAMint);
-                var tokenBVaultPda = DeriveTokenVaultPda(poolStatePda, poolConfig.TokenBMint);
-                var lpTokenAMintPda = DeriveLpMintPda(poolStatePda, poolConfig.TokenAMint);
-                var lpTokenBMintPda = DeriveLpMintPda(poolStatePda, poolConfig.TokenBMint);
+                // Derive vault and LP mint PDAs using dashboard-exact methods
+                var tokenAVaultPda = DeriveTokenAVaultPda(poolStatePda);
+                var tokenBVaultPda = DeriveTokenBVaultPda(poolStatePda);
+                var lpTokenAMintPda = DeriveLpTokenAMintPda(poolStatePda);
+                var lpTokenBMintPda = DeriveLpTokenBMintPda(poolStatePda);
                 
                 // For now, return a detailed analysis without the actual simulation
                 // since we know Solnet has transaction serialization issues
@@ -646,62 +662,72 @@ public class TransactionBuilderService : ITransactionBuilderService
             throw new InvalidOperationException("Failed to derive system state PDA");
         }
         
-        private PublicKey DerivePoolStatePda(string tokenA, string tokenB)
+        /// <summary>
+        /// Builds InitializeProgram transaction to initialize treasury system
+        /// </summary>
+        public async Task<byte[]> BuildInitializeProgramTransactionAsync(Account systemAuthority)
         {
-            var seeds = new List<byte[]>
+            try
             {
-                Encoding.UTF8.GetBytes("pool_state"),
-                new PublicKey(tokenA).KeyBytes,
-                new PublicKey(tokenB).KeyBytes
-            };
-            
-            if (PublicKey.TryFindProgramAddress(
-                seeds, 
-                new PublicKey(_config.ProgramId), 
-                out var pda, 
-                out _))
-            {
-                return pda;
+                _logger.LogInformation("Building InitializeProgram transaction for treasury system");
+                
+                var programId = new PublicKey(_config.ProgramId);
+                var systemStatePda = DeriveSystemStatePda();
+                var mainTreasuryPda = DeriveMainTreasuryPda();
+                
+                // Derive program data address for authority validation
+                var programDataAddress = DeriveUpgradeAuthorityAddress();
+                
+                // Build account structure per API documentation (6 accounts for InitializeProgram)
+                var accounts = new List<AccountMeta>
+                {
+                    // [0] Program Authority (signer, writable) - system authority
+                    AccountMeta.Writable(systemAuthority.PublicKey, true),
+                    // [1] System Program (readable)
+                    AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),
+                    // [2] Rent Sysvar (readable)
+                    AccountMeta.ReadOnly(new PublicKey("SysvarRent111111111111111111111111111111111"), false),
+                    // [3] System State PDA (writable) - will be created
+                    AccountMeta.Writable(systemStatePda, false),
+                    // [4] Main Treasury PDA (writable) - will be created
+                    AccountMeta.Writable(mainTreasuryPda, false),
+                    // [5] Program Data Account (readable) - for authority validation
+                    AccountMeta.ReadOnly(programDataAddress, false)
+                };
+                
+                // Create instruction data - discriminator 0 for InitializeProgram, no additional data
+                var instructionData = new byte[] { 0 }; // Just the discriminator
+                
+                var instruction = new TransactionInstruction
+                {
+                    ProgramId = programId,
+                    Keys = accounts,
+                    Data = instructionData
+                };
+                
+                _logger.LogInformation("Created InitializeProgram instruction with {AccountCount} accounts", accounts.Count);
+                
+                // Get compute units
+                var computeUnits = _computeUnitManager.GetComputeUnits("process_initialize_program");
+                
+                // Build transaction
+                var blockHash = await GetRecentBlockHashAsync();
+                var builder = new TransactionBuilder()
+                    .SetFeePayer(systemAuthority.PublicKey)
+                    .SetRecentBlockHash(blockHash)
+                    .AddInstruction(ComputeBudgetProgram.SetComputeUnitLimit(computeUnits))
+                    .AddInstruction(instruction);
+                
+                var result = builder.Build(systemAuthority);
+                _logger.LogInformation("Built InitializeProgram transaction: {Size} bytes", result.Length);
+                
+                return result;
             }
-            throw new InvalidOperationException("Failed to derive pool state PDA");
-        }
-        
-        private PublicKey DeriveTokenVaultPda(PublicKey poolStatePda, string tokenMint)
-        {
-            var seeds = new List<byte[]>
+            catch (Exception ex)
             {
-                Encoding.UTF8.GetBytes("token_a_vault"), // or "token_b_vault"
-                poolStatePda.KeyBytes
-            };
-            
-            if (PublicKey.TryFindProgramAddress(
-                seeds, 
-                new PublicKey(_config.ProgramId), 
-                out var pda, 
-                out _))
-            {
-                return pda;
+                _logger.LogError(ex, "Failed to build InitializeProgram transaction");
+                throw;
             }
-            throw new InvalidOperationException("Failed to derive token vault PDA");
-        }
-        
-        private PublicKey DeriveLpMintPda(PublicKey poolStatePda, string tokenMint)
-        {
-            var seeds = new List<byte[]>
-            {
-                Encoding.UTF8.GetBytes("lp_token_a_mint"), // or "lp_token_b_mint"
-                poolStatePda.KeyBytes
-            };
-            
-            if (PublicKey.TryFindProgramAddress(
-                seeds, 
-                new PublicKey(_config.ProgramId), 
-                out var pda, 
-                out _))
-            {
-                return pda;
-            }
-            throw new InvalidOperationException("Failed to derive LP mint PDA");
         }
         
         private PublicKey DeriveMainTreasuryPda()
@@ -718,38 +744,153 @@ public class TransactionBuilderService : ITransactionBuilderService
             throw new InvalidOperationException("Failed to derive main treasury PDA");
         }
         
-        // Helper method to get proper token ordering (matches JavaScript utils.js)
-        private (string tokenA, string tokenB) GetOrderedTokens(string tokenAMint, string tokenBMint)
+        private PublicKey DeriveUpgradeAuthorityAddress()
         {
-            // Convert to bytes and compare byte-by-byte (lexicographic ordering)
-            var tokenABytes = Convert.FromBase64String(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(tokenAMint)));
-            var tokenBBytes = Convert.FromBase64String(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(tokenBMint)));
+            // For localnet testing, derive the program data address
+            // In production, this would be the actual program data account
+            var programId = new PublicKey(_config.ProgramId);
             
-            // Actually, we need to decode the Base58 addresses and compare the raw bytes
-            // This matches the Rust/JavaScript byte comparison logic
-            var tokenADecoded = DecodeBase58(tokenAMint);
-            var tokenBDecoded = DecodeBase58(tokenBMint);
-            
-            // Compare byte arrays lexicographically
-            for (int i = 0; i < Math.Min(tokenADecoded.Length, tokenBDecoded.Length); i++)
+            // Program data address is derived from the program ID
+            // Format: [program_id + "ProgramData"]
+            if (PublicKey.TryFindProgramAddress(
+                new List<byte[]> { programId.KeyBytes },
+                new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111"),
+                out var programDataAddress,
+                out _))
             {
-                if (tokenADecoded[i] < tokenBDecoded[i])
-                    return (tokenAMint, tokenBMint); // A comes first
-                if (tokenADecoded[i] > tokenBDecoded[i])
-                    return (tokenBMint, tokenAMint); // B comes first
+                return programDataAddress;
             }
             
-            // If all compared bytes are equal, shorter array comes first
-            return tokenADecoded.Length <= tokenBDecoded.Length 
-                ? (tokenAMint, tokenBMint) 
-                : (tokenBMint, tokenAMint);
+            // Fallback to program ID itself for testing
+            return programId;
         }
         
-        // Helper to decode Base58 addresses for proper comparison
-        private byte[] DecodeBase58(string base58String)
+        private PublicKey DerivePoolStatePda(string tokenA, string tokenB, ulong ratioANumerator, ulong ratioBDenominator)
         {
-            // Use Solnet's built-in Base58 decoder
-            return new PublicKey(base58String).KeyBytes;
+            var seeds = new List<byte[]>
+            {
+                Encoding.UTF8.GetBytes("pool_state"),
+                new PublicKey(tokenA).KeyBytes,
+                new PublicKey(tokenB).KeyBytes,
+                BitConverter.GetBytes(ratioANumerator),    // Little-endian bytes
+                BitConverter.GetBytes(ratioBDenominator)   // Little-endian bytes
+            };
+            
+            if (PublicKey.TryFindProgramAddress(
+                seeds, 
+                new PublicKey(_config.ProgramId), 
+                out var pda, 
+                out _))
+            {
+                return pda;
+            }
+            throw new InvalidOperationException("Failed to derive pool state PDA");
+        }
+        
+        private PublicKey DeriveTokenAVaultPda(PublicKey poolStatePda)
+        {
+            var seeds = new List<byte[]>
+            {
+                Encoding.UTF8.GetBytes("token_a_vault"),
+                poolStatePda.KeyBytes
+            };
+            
+            if (PublicKey.TryFindProgramAddress(
+                seeds, 
+                new PublicKey(_config.ProgramId), 
+                out var pda, 
+                out _))
+            {
+                return pda;
+            }
+            throw new InvalidOperationException("Failed to derive token A vault PDA");
+        }
+        
+        private PublicKey DeriveTokenBVaultPda(PublicKey poolStatePda)
+        {
+            var seeds = new List<byte[]>
+            {
+                Encoding.UTF8.GetBytes("token_b_vault"),
+                poolStatePda.KeyBytes
+            };
+            
+            if (PublicKey.TryFindProgramAddress(
+                seeds, 
+                new PublicKey(_config.ProgramId), 
+                out var pda, 
+                out _))
+            {
+                return pda;
+            }
+            throw new InvalidOperationException("Failed to derive token B vault PDA");
+        }
+        
+        private PublicKey DeriveLpTokenAMintPda(PublicKey poolStatePda)
+        {
+            var seeds = new List<byte[]>
+            {
+                Encoding.UTF8.GetBytes("lp_token_a_mint"),
+                poolStatePda.KeyBytes
+            };
+            
+            if (PublicKey.TryFindProgramAddress(
+                seeds, 
+                new PublicKey(_config.ProgramId), 
+                out var pda, 
+                out _))
+            {
+                return pda;
+            }
+            throw new InvalidOperationException("Failed to derive LP token A mint PDA");
+        }
+        
+        private PublicKey DeriveLpTokenBMintPda(PublicKey poolStatePda)
+        {
+            var seeds = new List<byte[]>
+            {
+                Encoding.UTF8.GetBytes("lp_token_b_mint"),
+                poolStatePda.KeyBytes
+            };
+            
+            if (PublicKey.TryFindProgramAddress(
+                seeds, 
+                new PublicKey(_config.ProgramId), 
+                out var pda, 
+                out _))
+            {
+                return pda;
+            }
+            throw new InvalidOperationException("Failed to derive LP token B mint PDA");
+        }
+        
+        // Helper method to get proper token ordering (matches dashboard exactly)
+        private (string tokenA, string tokenB) GetOrderedTokens(string tokenAMint, string tokenBMint)
+        {
+            // Create PublicKeys for proper byte comparison (matches dashboard normalizeTokenOrder)
+            var mintA = new PublicKey(tokenAMint);
+            var mintB = new PublicKey(tokenBMint);
+            
+            // Get the raw 32-byte representations
+            var bytesA = mintA.KeyBytes;
+            var bytesB = mintB.KeyBytes;
+            
+            // Compare byte-by-byte (lexicographic ordering) - exact dashboard logic
+            bool aLessThanB = false;
+            for (int i = 0; i < 32; i++)
+            {
+                if (bytesA[i] < bytesB[i]) 
+                { 
+                    aLessThanB = true; 
+                    break; 
+                }
+                if (bytesA[i] > bytesB[i]) 
+                { 
+                    aLessThanB = false; 
+                    break; 
+                }
+            }
+            
+            return aLessThanB ? (tokenAMint, tokenBMint) : (tokenBMint, tokenAMint);
         }
         
         // Helper method to calculate basis points (matches JavaScript implementation)
@@ -777,14 +918,16 @@ public class TransactionBuilderService : ITransactionBuilderService
             var orderedDecimalsB = needsInversion ? tokenADecimals : tokenBDecimals;
             
             // Convert display ratio to basis points correctly
-            // For a 1:1 ratio between tokens with different decimals:
-            // - Token with 9 decimals: 1.0 = 1,000,000,000 basis points
-            // - Token with 6 decimals: 1.0 = 1,000,000 basis points
-            // Both should be "1" in display terms but different in basis points
+            // CRITICAL: Contract requires "One Equals 1" rule - one side MUST equal exactly 1.0 in display units
+            // For contract compliance, BOTH sides must equal 1.0 in display units for SimpleRatio type
             
-            // For 1:1 ratio, both sides should be 1.0 in display units
-            ulong ratioANumerator = (ulong)(1 * Math.Pow(10, orderedDecimalsA));
-            ulong ratioBDenominator = (ulong)(1 * Math.Pow(10, orderedDecimalsB));
+            // For SimpleRatio validation (required by smart contract):
+            // - ONE side = 1.0 * 10^decimals (anchored to 1.0 display unit)
+            // - OTHER side = ratioWholeNumber * 10^decimals (scaled by desired ratio)
+            // - This creates a 1:N ratio in display units, satisfying the "One Equals 1" rule
+            // - The contract validates: display_ratio_a == 1 OR display_ratio_b == 1
+            ulong ratioANumerator = (ulong)(1 * Math.Pow(10, orderedDecimalsA));                    // Always 1.0 display unit
+            ulong ratioBDenominator = (ulong)(ratioWholeNumber * Math.Pow(10, orderedDecimalsB));   // N display units
             
             _logger.LogInformation("🔢 Basis Points Calculation:");
             _logger.LogInformation("   Original Token A: {TokenA} ({DecimalsA} decimals)", tokenAMint, tokenADecimals);
