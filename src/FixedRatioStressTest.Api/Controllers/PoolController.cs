@@ -60,20 +60,21 @@ public class PoolController : ControllerBase
             // Parse parameters from JSON-RPC request
             var parameters = ParsePoolCreationParams(request.Params);
             
-            // Create pool on blockchain
-            var poolState = await _solanaClient.CreatePoolAsync(parameters);
+            // Create REAL pool on blockchain using core wallet
+            // This will: 1) Create/load core wallet, 2) Check SOL balance, 3) Attempt airdrop if needed, 4) Create pool
+            var realPool = await _solanaClient.CreateRealPoolAsync(parameters);
             
             var result = new PoolCreationResult
             {
-                PoolId = poolState.PoolId,
-                TokenAMint = poolState.TokenAMint,
-                TokenBMint = poolState.TokenBMint,
-                TokenADecimals = poolState.TokenADecimals,
-                TokenBDecimals = poolState.TokenBDecimals,
-                RatioDisplay = poolState.RatioDisplay,
-                CreationSignature = poolState.CreationSignature,
+                PoolId = realPool.PoolId,
+                TokenAMint = realPool.TokenAMint,
+                TokenBMint = realPool.TokenBMint,
+                TokenADecimals = realPool.TokenADecimals,
+                TokenBDecimals = realPool.TokenBDecimals,
+                RatioDisplay = realPool.RatioDisplay,
+                CreationSignature = realPool.CreationSignature,
                 Status = "created",
-                IsBlockchainPool = poolState.IsBlockchainPool
+                IsBlockchainPool = true // Always true for real pools
             };
 
             return Ok(new JsonRpcResponse<PoolCreationResult>

@@ -447,37 +447,17 @@ public async Task CleanupInvalidPoolsAsync()
                 LastBalanceCheck = DateTime.UtcNow
             };
             
-            // Fund the core wallet with multiple smaller airdrops (localnet limits)
-            _logger.LogInformation("💰 Funding core wallet with SOL...");
-            var targetBalance = coreWalletConfig.MinimumSolBalance + 5_000_000_000; // Extra 5 SOL buffer
-            var currentBalance = 0UL;
-            
-            // Try multiple airdrops of 1 SOL each to reach target
-            for (int i = 0; i < 5 && currentBalance < targetBalance; i++)
-            {
-                try
-                {
-                    var airdropAmount = Math.Min(1_000_000_000UL, targetBalance - currentBalance); // 1 SOL max per request
-                    _logger.LogInformation("Requesting airdrop {Attempt}/5: {Amount} SOL", i + 1, airdropAmount / 1_000_000_000.0);
-                    await RequestAirdropAsync(coreWalletConfig.PublicKey, airdropAmount);
-                    
-                    // Wait for each airdrop to complete
-                    await Task.Delay(2000);
-                    currentBalance = await GetSolBalanceAsync(coreWalletConfig.PublicKey);
-                    _logger.LogInformation("Current balance after airdrop {Attempt}: {Balance} SOL", i + 1, currentBalance / 1_000_000_000.0);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Airdrop attempt {Attempt} failed", i + 1);
-                }
-            }
-            
+            // Check initial balance but don't fund automatically
+            var currentBalance = await GetSolBalanceAsync(coreWalletConfig.PublicKey);
             coreWalletConfig.CurrentSolBalance = currentBalance;
+            
+            _logger.LogInformation("📊 Core wallet created with balance: {Balance} SOL (funding will occur when needed for pool creation)", 
+                currentBalance / 1_000_000_000.0);
             
             // Save the core wallet
             await _storageService.SaveCoreWalletAsync(coreWalletConfig);
             
-            _logger.LogInformation("✅ Core wallet created and funded: {PublicKey} ({Balance} SOL)", 
+            _logger.LogInformation("✅ Core wallet created: {PublicKey} ({Balance} SOL)", 
                 coreWalletConfig.PublicKey, currentBalance / 1_000_000_000.0);
             
             return coreWalletConfig;
@@ -489,14 +469,97 @@ public async Task CleanupInvalidPoolsAsync()
         }
     }
     
+    private async Task EnsureCoreWalletHasSufficientSolAsync(CoreWalletConfig coreWallet)
+    {
+        try
+        {
+            _logger.LogInformation("💰 Checking core wallet SOL balance before pool creation...");
+            
+            // Check current balance
+            var currentBalance = await GetSolBalanceAsync(coreWallet.PublicKey);
+            var requiredBalance = 2_000_000_000UL; // 2 SOL minimum for pool creation operations
+            
+            _logger.LogInformation("Current balance: {Current} SOL, Required: {Required} SOL", 
+                currentBalance / 1_000_000_000.0, requiredBalance / 1_000_000_000.0);
+            
+            if (currentBalance >= requiredBalance)
+            {
+                _logger.LogInformation("✅ Core wallet has sufficient SOL balance");
+                return;
+            }
+            
+            _logger.LogInformation("⚠️ Insufficient SOL balance, attempting airdrop...");
+            
+            // Try to fund with airdrops
+            var neededAmount = requiredBalance - currentBalance;
+            var funded = false;
+            
+            for (int attempt = 1; attempt <= 3 && !funded; attempt++)
+            {
+                try
+                {
+                    var airdropAmount = Math.Min(1_000_000_000UL, neededAmount); // 1 SOL max per request
+                    _logger.LogInformation("Airdrop attempt {Attempt}/3: Requesting {Amount} SOL", 
+                        attempt, airdropAmount / 1_000_000_000.0);
+                    
+                    await RequestAirdropAsync(coreWallet.PublicKey, airdropAmount);
+                    
+                    // Wait for confirmation
+                    await Task.Delay(3000);
+                    
+                    currentBalance = await GetSolBalanceAsync(coreWallet.PublicKey);
+                    _logger.LogInformation("Balance after airdrop attempt {Attempt}: {Balance} SOL", 
+                        attempt, currentBalance / 1_000_000_000.0);
+                    
+                    if (currentBalance >= requiredBalance)
+                    {
+                        funded = true;
+                        _logger.LogInformation("✅ Core wallet successfully funded via airdrop");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Airdrop attempt {Attempt} failed", attempt);
+                }
+            }
+            
+            // Final balance check
+            if (currentBalance < requiredBalance)
+            {
+                var errorMsg = $"Cannot create pool: Core wallet has insufficient SOL balance. " +
+                              $"Current: {currentBalance / 1_000_000_000.0:F2} SOL, " +
+                              $"Required: {requiredBalance / 1_000_000_000.0:F2} SOL. " +
+                              $"Airdrop attempts failed. Please fund the core wallet manually.";
+                
+                _logger.LogError(errorMsg);
+                throw new InvalidOperationException(errorMsg);
+            }
+            
+            // Update wallet config with new balance
+            coreWallet.CurrentSolBalance = currentBalance;
+            coreWallet.LastBalanceCheck = DateTime.UtcNow;
+            await _storageService.SaveCoreWalletAsync(coreWallet);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to ensure core wallet has sufficient SOL");
+            throw;
+        }
+    }
+    
     public async Task<StressTestTokenMint> CreateTokenMintAsync(int decimals, string? symbol = null)
     {
         try
         {
             _logger.LogInformation("🪙 Creating token mint with {Decimals} decimals...", decimals);
             
-            // Get core wallet as mint authority
-            var coreWallet = await GetOrCreateCoreWalletAsync();
+            // Load existing core wallet as mint authority
+            var coreWallet = await _storageService.LoadCoreWalletAsync();
+            if (coreWallet == null)
+            {
+                throw new InvalidOperationException("Core wallet not found. This should have been created during application startup.");
+            }
+            
             var coreKeyPair = RestoreWallet(System.Text.Encoding.UTF8.GetBytes(coreWallet.PrivateKey));
             
             // Generate new mint address
@@ -576,11 +639,19 @@ public async Task CleanupInvalidPoolsAsync()
         {
             _logger.LogInformation("🏊 Creating REAL pool on the smart contract...");
             
-            // Step 1: Get core wallet
-            var coreWallet = await GetOrCreateCoreWalletAsync();
+            // Step 1: Load existing core wallet (should exist from startup)
+            var coreWallet = await _storageService.LoadCoreWalletAsync();
+            if (coreWallet == null)
+            {
+                throw new InvalidOperationException("Core wallet not found. This should have been created during application startup.");
+            }
+            
+            // Step 2: Check SOL balance and attempt funding if needed
+            await EnsureCoreWalletHasSufficientSolAsync(coreWallet);
+            
             var coreKeyPair = RestoreWallet(System.Text.Encoding.UTF8.GetBytes(coreWallet.PrivateKey));
             
-            // Step 2: Create token mints using core wallet as authority
+            // Step 3: Create token mints using core wallet as authority
             _logger.LogInformation("🪙 Creating token mints...");
             var tokenADecimals = parameters.TokenADecimals ?? 9; // Default SOL-like
             var tokenBDecimals = parameters.TokenBDecimals ?? 6; // Default USDC-like

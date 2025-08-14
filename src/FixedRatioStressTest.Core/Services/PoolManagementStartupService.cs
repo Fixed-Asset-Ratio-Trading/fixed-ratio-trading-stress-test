@@ -27,12 +27,18 @@ public class PoolManagementStartupService : IHostedService
 
         try
         {
-            // Step 1: Clean up any invalid pools first
-            _logger.LogInformation("🧹 Step 1: Cleaning up invalid pools...");
+            // Step 1: Initialize core wallet (after version check has passed)
+            _logger.LogInformation("🔑 Step 1: Initializing core wallet...");
+            var coreWallet = await _solanaClient.GetOrCreateCoreWalletAsync();
+            _logger.LogInformation("✅ Core wallet ready: {PublicKey} ({Balance} SOL)", 
+                coreWallet.PublicKey, coreWallet.CurrentSolBalance / 1_000_000_000.0);
+
+            // Step 2: Clean up any invalid pools
+            _logger.LogInformation("🧹 Step 2: Cleaning up invalid pools...");
             await _solanaClient.CleanupInvalidPoolsAsync();
 
-            // Step 2: Ensure we have the target number of managed pools
-            _logger.LogInformation("🎯 Step 2: Ensuring target pool count...");
+            // Step 3: Ensure we have the target number of managed pools
+            _logger.LogInformation("🎯 Step 3: Ensuring target pool count...");
             var managedPools = await _solanaClient.GetOrCreateManagedPoolsAsync(targetPoolCount: 3);
 
             _logger.LogInformation("✅ Pool management startup complete: {Count} pools ready", managedPools.Count);
