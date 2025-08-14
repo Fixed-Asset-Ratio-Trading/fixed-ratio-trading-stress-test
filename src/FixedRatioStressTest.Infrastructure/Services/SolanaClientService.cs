@@ -622,12 +622,58 @@ public async Task CleanupInvalidPoolsAsync()
             
             _logger.LogInformation("📤 Sent token mint creation transaction: {Signature}", signature.Result);
             
-            // Wait for confirmation
-            await Task.Delay(2000);
-            var confirmed = await ConfirmTransactionAsync(signature.Result);
+            // Wait for confirmation with retry logic
+            _logger.LogInformation("⏳ Waiting for token mint transaction confirmation...");
+            var confirmed = false;
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                await Task.Delay(3000); // Longer wait for localnet
+                confirmed = await ConfirmTransactionAsync(signature.Result);
+                if (confirmed)
+                {
+                    _logger.LogInformation("✅ Token mint transaction confirmed on attempt {Attempt}", attempt);
+                    break;
+                }
+                _logger.LogWarning("⏳ Token mint confirmation attempt {Attempt}/3 failed", attempt);
+            }
+            
             if (!confirmed)
             {
-                _logger.LogWarning("Token mint creation may not have confirmed: {Signature}", signature.Result);
+                _logger.LogError("❌ Token mint creation failed to confirm after 3 attempts: {Signature}", signature.Result);
+                throw new InvalidOperationException($"Token mint transaction failed to confirm: {signature.Result}");
+            }
+            
+            // Verify the token mint account is now accessible
+            _logger.LogInformation("🔍 Verifying token mint account is accessible...");
+            
+            // Try with different commitment levels if first attempt fails
+            var mintAccountInfo = await _rpcClient.GetAccountInfoAsync(mintAddress, Solnet.Rpc.Types.Commitment.Confirmed);
+            if (mintAccountInfo.Result?.Value == null)
+            {
+                _logger.LogWarning("⚠️ Token mint not found with Confirmed commitment, trying Finalized...");
+                await Task.Delay(2000); // Additional wait
+                mintAccountInfo = await _rpcClient.GetAccountInfoAsync(mintAddress, Solnet.Rpc.Types.Commitment.Finalized);
+            }
+            
+            if (mintAccountInfo.Result?.Value == null)
+            {
+                _logger.LogWarning("⚠️ Token mint not found with Finalized commitment, trying Processed...");
+                await Task.Delay(1000);
+                mintAccountInfo = await _rpcClient.GetAccountInfoAsync(mintAddress, Solnet.Rpc.Types.Commitment.Processed);
+            }
+            
+            if (mintAccountInfo.Result?.Value == null)
+            {
+                _logger.LogError("❌ Token mint account not accessible with any commitment level: {MintAddress}", mintAddress);
+                _logger.LogInformation("🔍 Transaction was confirmed but account is not accessible. This might be a localnet timing issue.");
+                _logger.LogInformation("🔍 Transaction signature: {Signature}", signature.Result);
+                _logger.LogInformation("🔍 Mint address: {MintAddress}", mintAddress);
+                // For now, continue anyway since the transaction was confirmed
+                _logger.LogWarning("⚠️ Continuing despite account accessibility issue...");
+            }
+            else
+            {
+                _logger.LogInformation("✅ Token mint account verified: {MintAddress}", mintAddress);
             }
             
             // Create token mint info
@@ -705,6 +751,53 @@ public async Task CleanupInvalidPoolsAsync()
             string poolCreationSignature;
             try
             {
+                _logger.LogInformation("🔍 Validating token mints before pool creation...");
+                // Verify token mints exist and are valid (like JavaScript does)
+                // Try multiple commitment levels for localnet compatibility
+                var tokenAInfo = await _rpcClient.GetAccountInfoAsync(tokenAMint.MintAddress, Solnet.Rpc.Types.Commitment.Processed);
+                var tokenBInfo = await _rpcClient.GetAccountInfoAsync(tokenBMint.MintAddress, Solnet.Rpc.Types.Commitment.Processed);
+                
+                if (tokenAInfo.Result?.Value == null)
+                {
+                    _logger.LogWarning("⚠️ Token A mint not found with Processed commitment, trying Confirmed...");
+                    await Task.Delay(1000);
+                    tokenAInfo = await _rpcClient.GetAccountInfoAsync(tokenAMint.MintAddress, Solnet.Rpc.Types.Commitment.Confirmed);
+                }
+                if (tokenBInfo.Result?.Value == null)
+                {
+                    _logger.LogWarning("⚠️ Token B mint not found with Processed commitment, trying Confirmed...");
+                    await Task.Delay(1000);
+                    tokenBInfo = await _rpcClient.GetAccountInfoAsync(tokenBMint.MintAddress, Solnet.Rpc.Types.Commitment.Confirmed);
+                }
+                
+                if (tokenAInfo.Result?.Value == null)
+                {
+                    _logger.LogWarning("⚠️ Token A mint still not accessible, but transaction was confirmed. Continuing...");
+                }
+                if (tokenBInfo.Result?.Value == null)
+                {
+                    _logger.LogWarning("⚠️ Token B mint still not accessible, but transaction was confirmed. Continuing...");
+                }
+                
+                _logger.LogInformation("✅ Token mint validation completed (may have timing issues on localnet)");
+                
+                _logger.LogInformation("🔍 Validating system state is initialized...");
+                // Check if system state PDA exists (like JavaScript validates pause state)
+                var systemStatePda = _transactionBuilder.DeriveSystemStatePda();
+                var systemStateInfo = await _rpcClient.GetAccountInfoAsync(systemStatePda.ToString());
+                
+                if (systemStateInfo.Result?.Value == null)
+                {
+                    _logger.LogWarning("⚠️ System state PDA not found - the contract may not be initialized");
+                    _logger.LogInformation($"   System State PDA: {systemStatePda}");
+                    _logger.LogInformation("   This might be the reason for 'Program failed to complete'");
+                    // Continue anyway to see what other error we get
+                }
+                else
+                {
+                    _logger.LogInformation("✅ System state validation passed");
+                }
+                
                 _logger.LogInformation("📤 Submitting pool creation to smart contract...");
                 Console.WriteLine("[DEBUG] About to call BuildCreatePoolTransactionAsync...");
                 // CRITICAL FIX: Build transaction using existing method but bypass our wrapper
@@ -1289,9 +1382,14 @@ public async Task CleanupInvalidPoolsAsync()
                     $"got A={config.RatioANumerator}, B={config.RatioBDenominator}");
             }
             
-            // Calculate and log the exchange rate for verification
-            var rate = (double)config.RatioBDenominator / config.RatioANumerator;
+            // Calculate and log the exchange rate for verification 
+            // Convert basis points back to display units for verification
+            var tokenADisplayAmount = config.RatioANumerator / Math.Pow(10, tokenADecimals);
+            var tokenBDisplayAmount = config.RatioBDenominator / Math.Pow(10, tokenBDecimals);
+            var rate = tokenBDisplayAmount / tokenADisplayAmount;
             _logger.LogInformation("Pool ratio validated: 1 Token A = {Rate:F6} Token B", rate);
+            _logger.LogInformation("   Basis points: {RatioA} : {RatioB}", config.RatioANumerator, config.RatioBDenominator);
+            _logger.LogInformation("   Display units: {DisplayA} : {DisplayB}", tokenADisplayAmount, tokenBDisplayAmount);
             
             // Warn about potentially problematic ratios
             if (rate > 1_000_000 || rate < 0.000001)

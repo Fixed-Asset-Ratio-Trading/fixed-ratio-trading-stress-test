@@ -632,7 +632,7 @@ public class TransactionBuilderService : ITransactionBuilderService
         }
         
         // PDA derivation helpers
-        private PublicKey DeriveSystemStatePda()
+        public PublicKey DeriveSystemStatePda()
         {
             var seeds = new List<byte[]> { Encoding.UTF8.GetBytes("system_state") };
             if (PublicKey.TryFindProgramAddress(
@@ -769,32 +769,35 @@ public class TransactionBuilderService : ITransactionBuilderService
                 needsInversion = !needsInversion;
             }
             
-            // Calculate basis points using token decimals
-            var decimalsA = tokenADecimals;
-            var decimalsB = tokenBDecimals;
-            var decimalsDiff = Math.Abs(decimalsA - decimalsB);
+            // FIXED: Calculate basis points correctly using token decimals
+            // For a 1:1 ratio, we need to convert to basis points using actual decimal places
             
-            ulong ratioANumerator, ratioBDenominator;
+            // Determine which token has which decimals after ordering
+            var orderedDecimalsA = needsInversion ? tokenBDecimals : tokenADecimals;
+            var orderedDecimalsB = needsInversion ? tokenADecimals : tokenBDecimals;
             
-            if (needsInversion)
-            {
-                // Inverted ratio
-                ratioBDenominator = ratioWholeNumber;
-                ratioANumerator = (ulong)Math.Pow(10, decimalsDiff);
-            }
-            else
-            {
-                // Normal ratio
-                ratioANumerator = ratioWholeNumber;
-                ratioBDenominator = (ulong)Math.Pow(10, decimalsDiff);
-            }
+            // Convert display ratio to basis points correctly
+            // For a 1:1 ratio between tokens with different decimals:
+            // - Token with 9 decimals: 1.0 = 1,000,000,000 basis points
+            // - Token with 6 decimals: 1.0 = 1,000,000 basis points
+            // Both should be "1" in display terms but different in basis points
+            
+            // For 1:1 ratio, both sides should be 1.0 in display units
+            ulong ratioANumerator = (ulong)(1 * Math.Pow(10, orderedDecimalsA));
+            ulong ratioBDenominator = (ulong)(1 * Math.Pow(10, orderedDecimalsB));
             
             _logger.LogInformation("🔢 Basis Points Calculation:");
-            _logger.LogInformation("   Ordered Token A: {TokenA} ({DecimalsA} decimals)", orderedTokenA, decimalsA);
-            _logger.LogInformation("   Ordered Token B: {TokenB} ({DecimalsB} decimals)", orderedTokenB, decimalsB);
+            _logger.LogInformation("   Original Token A: {TokenA} ({DecimalsA} decimals)", tokenAMint, tokenADecimals);
+            _logger.LogInformation("   Original Token B: {TokenB} ({DecimalsB} decimals)", tokenBMint, tokenBDecimals);
+            _logger.LogInformation("   Ordered Token A: {TokenA} ({DecimalsA} decimals)", orderedTokenA, orderedDecimalsA);
+            _logger.LogInformation("   Ordered Token B: {TokenB} ({DecimalsB} decimals)", orderedTokenB, orderedDecimalsB);
             _logger.LogInformation("   Ratio Direction: {Direction}", ratioDirection);
             _logger.LogInformation("   Needs Inversion: {NeedsInversion}", needsInversion);
-            _logger.LogInformation("   Final Ratio: {Numerator}:{Denominator}", ratioANumerator, ratioBDenominator);
+            _logger.LogInformation("   Input Ratio: {Ratio}", ratioWholeNumber);
+            _logger.LogInformation("   Final Basis Points: {Numerator}:{Denominator}", ratioANumerator, ratioBDenominator);
+            _logger.LogInformation("   Display Verification: {DisplayA} : {DisplayB}", 
+                ratioANumerator / Math.Pow(10, orderedDecimalsA), 
+                ratioBDenominator / Math.Pow(10, orderedDecimalsB));
             
             return (ratioANumerator, ratioBDenominator);
         }

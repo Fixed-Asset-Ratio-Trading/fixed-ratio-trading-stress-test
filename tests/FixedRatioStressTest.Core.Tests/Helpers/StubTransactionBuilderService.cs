@@ -91,4 +91,10 @@ public class StubTransactionBuilderService : ITransactionBuilderService
         // Return a mock associated token account address
         return Task.FromResult($"stub_ata_{Guid.NewGuid():N}");
     }
+
+    public PublicKey DeriveSystemStatePda()
+    {
+        // Return a stub system state PDA
+        return new PublicKey("11111111111111111111111111111111");
+    }
 }

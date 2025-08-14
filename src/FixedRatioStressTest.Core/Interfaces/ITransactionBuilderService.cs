@@ -22,6 +22,11 @@ public interface ITransactionBuilderService
     Task<TransactionSimulationResult> SimulateCreatePoolTransactionAsync(
         Wallet payer,
         PoolConfig poolConfig);
+
+    /// <summary>
+    /// Derive the system state PDA for validation
+    /// </summary>
+    PublicKey DeriveSystemStatePda();
     
     /// <summary>
     /// Builds a transaction for depositing tokens into a pool
