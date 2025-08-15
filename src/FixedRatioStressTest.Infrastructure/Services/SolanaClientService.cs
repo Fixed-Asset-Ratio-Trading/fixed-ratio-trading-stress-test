@@ -1133,6 +1133,11 @@ public async Task CleanupInvalidPoolsAsync()
             return _poolCache.Values.ToList();
         }
 
+        public async Task<List<string>> GetActivePoolsAsync()
+        {
+            return await _storageService.LoadActivePoolIdsAsync();
+        }
+
         // Deposit operations
         public async Task<DepositResult> ExecuteDepositAsync(
             Wallet wallet, 

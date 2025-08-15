@@ -47,6 +47,7 @@ public interface ISolanaClientService
     Task<List<PoolState>> GetAllPoolsAsync();
     
     // Pool lifecycle management  
+    Task<List<string>> GetActivePoolsAsync();
     Task<List<string>> GetOrCreateManagedPoolsAsync(int targetPoolCount = 3);
     Task<bool> ValidatePoolExistsAsync(string poolId);
     Task CleanupInvalidPoolsAsync();
