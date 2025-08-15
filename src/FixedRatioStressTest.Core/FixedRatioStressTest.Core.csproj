@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FixedRatioStressTest.Common\FixedRatioStressTest.Common.csproj" />
+    <ProjectReference Include="..\FixedRatioStressTest.Abstractions\FixedRatioStressTest.Abstractions.csproj" />
   </ItemGroup>
 
   <ItemGroup>

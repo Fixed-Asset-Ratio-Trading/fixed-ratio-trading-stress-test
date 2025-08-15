@@ -1,3 +1,5 @@
+using FixedRatioStressTest.Abstractions;
+using FixedRatioStressTest.Core;
 using FixedRatioStressTest.Core.Interfaces;
 using FixedRatioStressTest.Core.Services;
 using FixedRatioStressTest.Core.Threading;
@@ -64,15 +66,28 @@ builder.Services.AddSingleton(typeof(HighPerformanceObjectPool<>));
 // Register core application services
 builder.Services.AddSingleton<IStorageService, JsonFileStorageService>();
 builder.Services.AddSingleton<IComputeUnitManager, ComputeUnitManager>();
-builder.Services.AddSingleton<IContractVersionService, RawRpcContractVersionService>(); // Using raw RPC to bypass Solnet issues
+builder.Services.AddSingleton<IContractVersionService, RawRpcContractVersionService>(); // Raw RPC validation
 builder.Services.AddSingleton<ISolanaClientService, SolanaClientService>();
 builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
 builder.Services.AddSingleton<IThreadManager, ThreadManager>();
 
-// Add background services - ORDER MATTERS for startup!
-builder.Services.AddHostedService<ContractVersionStartupService>(); // FIRST: Must validate blockchain connectivity
-builder.Services.AddHostedService<PoolManagementStartupService>(); // SECOND: Depends on blockchain being available
-builder.Services.AddHostedService<PerformanceMonitorService>(); // THIRD: Monitoring can start last
+// Register engine and Windows host logger for API host usage
+builder.Services.AddSingleton<IEventLogger, FixedRatioStressTest.Hosting.WindowsService.WindowsEventLogger>();
+builder.Services.AddSingleton<IServiceLifecycle, StressTestEngine>(sp =>
+{
+    return new StressTestEngine(
+        sp.GetRequiredService<IThreadManager>(),
+        sp.GetRequiredService<ISolanaClientService>(),
+        sp.GetRequiredService<IContractVersionService>(),
+        sp.GetRequiredService<IStorageService>(),
+        sp.GetRequiredService<IComputeUnitManager>(),
+        sp.GetRequiredService<IEventLogger>(),
+        sp.GetRequiredService<IConfiguration>());
+});
+
+// Add background services - orchestrated by the engine instead of the ASP.NET host
+// NOTE: Performance monitor remains as a host background service if desired
+builder.Services.AddHostedService<PerformanceMonitorService>();
 
 // Configure Windows Service support (if needed)
 if (OperatingSystem.IsWindows())
