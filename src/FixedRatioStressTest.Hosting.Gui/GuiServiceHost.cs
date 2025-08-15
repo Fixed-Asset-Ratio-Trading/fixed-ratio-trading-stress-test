@@ -21,11 +21,15 @@ public sealed class GuiServiceHost : Form, IServiceHost
     private ComboBox _logFilter = null!;
     private CheckBox _autoScroll = null!;
     private Button _clearLogs = null!;
+    private Button _copyLogs = null!;
     private ListView _listView = null!;
 
     // In-memory log buffer to enable filtering
     private readonly List<LogEventArgs> _logBuffer = new();
     private Microsoft.Extensions.Logging.LogLevel _filterLevel = Microsoft.Extensions.Logging.LogLevel.Trace;
+    private EventLogListener? _eventLogListener;
+    private FileLogListener? _fileLogListener;
+    private UdpLogListener? _udpLogListener;
 
     public string HostType => "GUI";
 
@@ -66,6 +70,17 @@ public sealed class GuiServiceHost : Form, IServiceHost
             HandleCreated += (_, __) => UpdateUiState();
         }
 
+        // Start listening to Windows Application EventLog to mirror service logs into GUI
+        _eventLogListener = new EventLogListener(_eventLogger);
+        _eventLogListener.Start();
+        // Mirror API file log into GUI if present
+        var apiLogPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "FixedRatioStressTest.Api", "bin", "Debug", "net8.0", "logs", "api.log");
+        _fileLogListener = new FileLogListener(_eventLogger, apiLogPath);
+        _fileLogListener.Start();
+        // UDP live log listener
+        _udpLogListener = new UdpLogListener(_eventLogger, 51999);
+        _udpLogListener.Start();
+
         return Task.CompletedTask;
     }
 
@@ -81,6 +96,9 @@ public sealed class GuiServiceHost : Form, IServiceHost
         {
             await _engine.StopAsync(cancellationToken);
         }
+        _eventLogListener?.Dispose();
+        _fileLogListener?.Dispose();
+        _udpLogListener?.Dispose();
         Close();
     }
 
@@ -102,15 +120,18 @@ public sealed class GuiServiceHost : Form, IServiceHost
         _logFilter.SelectedIndex = 0;
         _autoScroll = new CheckBox { Text = "Auto-scroll", Left = 140, Top = 8, Width = 100, Checked = true };
         _clearLogs = new Button { Text = "Clear", Left = 250, Width = 80, Height = 24, Top = 5 };
+        _copyLogs = new Button { Text = "Copy", Left = 340, Width = 80, Height = 24, Top = 5, Enabled = false };
 
-        filterPanel.Controls.AddRange(new Control[] { _logFilter, _autoScroll, _clearLogs });
+        filterPanel.Controls.AddRange(new Control[] { _logFilter, _autoScroll, _clearLogs, _copyLogs });
 
         _listView = new ListView
         {
             Dock = DockStyle.Fill,
             View = View.Details,
             FullRowSelect = true,
-            GridLines = true
+            GridLines = true,
+            MultiSelect = true,
+            HideSelection = false
         };
         _listView.Columns.Add("Time", 120);
         _listView.Columns.Add("Level", 80);
@@ -135,7 +156,9 @@ public sealed class GuiServiceHost : Form, IServiceHost
                 await SafeRun(_engine.ResumeAsync, "Failed to resume service");
         };
 
-        _clearLogs.Click += (_, __) => { _logBuffer.Clear(); _listView.Items.Clear(); };
+        _clearLogs.Click += (_, __) => { _logBuffer.Clear(); _listView.Items.Clear(); _copyLogs.Enabled = false; };
+        _copyLogs.Click += (_, __) => CopySelectedLogsToClipboard();
+        _listView.SelectedIndexChanged += (_, __) => _copyLogs.Enabled = _listView.SelectedItems.Count > 0;
         _logFilter.SelectedIndexChanged += (_, __) => { UpdateFilterLevel(); RefreshLogList(); };
 
         FormClosing += async (s, e) =>
@@ -204,6 +227,21 @@ public sealed class GuiServiceHost : Form, IServiceHost
         foreach (var e in _logBuffer.Where(ShouldDisplay).Take(1000))
             InsertListItem(e);
         _listView.EndUpdate();
+    }
+
+    private void CopySelectedLogsToClipboard()
+    {
+        if (_listView.SelectedItems.Count == 0) return;
+        var lines = new List<string>(_listView.SelectedItems.Count);
+        foreach (ListViewItem item in _listView.SelectedItems)
+        {
+            var time = item.SubItems[0].Text;
+            var level = item.SubItems[1].Text;
+            var message = item.SubItems[2].Text;
+            lines.Add($"{time}\t{level}\t{message}");
+        }
+        var text = string.Join(Environment.NewLine, lines);
+        try { Clipboard.SetText(text); } catch { }
     }
 
     private static string ShortLevel(Microsoft.Extensions.Logging.LogLevel level) => level switch

@@ -27,6 +27,11 @@ internal static class Program
         services.AddSingleton<IConfiguration>(configuration);
         services.AddLogging();
 
+        // Bind GUI logger options
+        var loggerOptions = new GuiLoggerOptions();
+        configuration.GetSection("GuiLogging").Bind(loggerOptions);
+        services.AddSingleton(loggerOptions);
+
         // Core dependencies
         services.AddSingleton<IStorageService, JsonFileStorageService>();
         services.AddSingleton<IComputeUnitManager, ComputeUnitManager>();

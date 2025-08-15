@@ -7,6 +7,7 @@ using FixedRatioStressTest.Infrastructure.Services;
 using FixedRatioStressTest.Api.Services;
 using Microsoft.AspNetCore.ResponseCompression;
 using System.IO.Compression;
+using FixedRatioStressTest.Api.Middleware;
 
 // Apply Windows performance optimizations for 32-core Threadripper
 if (OperatingSystem.IsWindows())
@@ -71,8 +72,19 @@ builder.Services.AddSingleton<ISolanaClientService, SolanaClientService>();
 builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
 builder.Services.AddSingleton<IThreadManager, ThreadManager>();
 
-// Register engine and Windows host logger for API host usage
-builder.Services.AddSingleton<IEventLogger, FixedRatioStressTest.Hosting.WindowsService.WindowsEventLogger>();
+// Register engine and logger for API host usage: composite -> EventViewer, file, UDP to GUI
+builder.Services.AddSingleton<IEventLogger>(sp =>
+{
+    var logFile = Path.Combine(AppContext.BaseDirectory, "logs", "api.log");
+    Directory.CreateDirectory(Path.GetDirectoryName(logFile)!);
+    var composite = new FixedRatioStressTest.Hosting.WindowsService.CompositeEventLogger(new IEventLogger[]
+    {
+        new FixedRatioStressTest.Hosting.WindowsService.WindowsEventLogger(sp.GetRequiredService<ILogger<FixedRatioStressTest.Hosting.WindowsService.WindowsEventLogger>>()),
+        new FixedRatioStressTest.Hosting.WindowsService.SimpleFileEventLogger(logFile),
+        new FixedRatioStressTest.Hosting.WindowsService.UdpEventLogger("127.0.0.1", 51999)
+    });
+    return composite;
+});
 builder.Services.AddSingleton<IServiceLifecycle, StressTestEngine>(sp =>
 {
     return new StressTestEngine(
@@ -102,6 +114,9 @@ var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 app.UseResponseCompression();
+
+// Log every incoming HTTP request and response status
+app.UseMiddleware<RequestLoggingMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {

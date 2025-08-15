@@ -88,17 +88,21 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
                 return;
             }
 
+            _eventLogger.LogDebug("[Engine] StartAsync invoked");
             await ChangeStateAsync(ServiceState.Starting, "Engine startup initiated");
 
             // Apply Windows optimizations if running on Windows.
             if (OperatingSystem.IsWindows())
             {
+                _eventLogger.LogDebug("[Engine] Applying Windows performance optimizations");
                 WindowsPerformanceOptimizer.OptimizeForThreadripper();
             }
 
             // Start startup services in order.
+            _eventLogger.LogDebug("[Engine] Starting {0} startup services", _startupServices.Count);
             foreach (var svc in _startupServices)
             {
+                _eventLogger.LogDebug("[Engine] Starting service {0}", svc.GetType().Name);
                 await svc.StartAsync(cancellationToken);
             }
 
@@ -128,10 +132,12 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
                 return;
             }
 
+            _eventLogger.LogDebug("[Engine] StopAsync invoked");
             await ChangeStateAsync(ServiceState.Stopping, "Engine shutdown initiated");
 
             // Stop all running stress threads gracefully.
             var allThreads = await _threadManager.GetAllThreadsAsync();
+            _eventLogger.LogDebug("[Engine] Stopping {0} running threads", allThreads.Count(t => t.Status == ThreadStatus.Running));
             foreach (var t in allThreads.Where(t => t.Status == ThreadStatus.Running))
             {
                 await _threadManager.StopThreadAsync(t.ThreadId);
@@ -140,6 +146,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
             // Stop services in reverse order.
             foreach (var svc in Enumerable.Reverse(_startupServices))
             {
+                _eventLogger.LogDebug("[Engine] Stopping service {0}", svc.GetType().Name);
                 await svc.StopAsync(cancellationToken);
             }
 
@@ -170,6 +177,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
                 return;
             }
 
+            _eventLogger.LogDebug("[Engine] PauseAsync invoked");
             await ChangeStateAsync(ServiceState.Pausing, "Pausing engine");
 
             // For now, we stop threads to simulate pause. A future enhancement can add native pause.
@@ -209,6 +217,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
                 await _threadManager.StartThreadAsync(t.ThreadId);
             }
 
+            _eventLogger.LogDebug("[Engine] ResumeAsync invoked");
             await ChangeStateAsync(ServiceState.Started, "Engine resumed");
             _eventLogger.LogInformation("Engine resumed");
         }
