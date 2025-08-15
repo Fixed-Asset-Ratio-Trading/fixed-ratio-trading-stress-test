@@ -8,6 +8,18 @@
 ---
 
 ## Application Purpose
+### Pool Lifecycle Management (Automatic Import/Reuse)
+
+- On startup, the service automatically imports and reuses any pools it previously created.
+- The service validates all saved pools against the blockchain and deletes stale entries that no longer exist on-chain.
+- Valid saved pools are auto-added to the active pool set and reused for all subsequent operations.
+- If the number of active pools is below the configured target, the service will create new pools to reach the target.
+
+Implementation details:
+- `PoolManagementStartupService` calls `ValidateAndCleanupSavedPoolsAsync()` and then `GetOrCreateManagedPoolsAsync(target)`.
+- `SolanaClientService.GetOrCreateManagedPoolsAsync` also auto-imports valid pools from `real_pools.json` into the active set.
+- No manual API endpoint is required; this behavior is automatic at startup.
+
 
 ### What This Application Does
 

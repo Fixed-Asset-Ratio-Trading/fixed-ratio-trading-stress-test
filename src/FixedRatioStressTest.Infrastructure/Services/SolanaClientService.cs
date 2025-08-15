@@ -290,6 +290,27 @@ public async Task<List<string>> GetOrCreateManagedPoolsAsync(int targetPoolCount
         // Step 1: Load existing active pool IDs from storage
         var activePoolIds = await _storageService.LoadActivePoolIdsAsync();
         _logger.LogInformation("📋 Found {Count} stored pool IDs", activePoolIds.Count);
+
+        // Step 1.1: Attempt to auto-import previously saved real pools (created by this app) into active list
+        // This ensures pools created in prior runs are reused if they still exist on-chain
+        var savedRealPools = await _storageService.LoadRealPoolsAsync();
+        foreach (var rp in savedRealPools)
+        {
+            if (!activePoolIds.Contains(rp.PoolId))
+            {
+                var exists = await ValidatePoolExistsOnBlockchainAsync(rp.PoolId);
+                if (exists)
+                {
+                    _logger.LogInformation("♻️ Auto-importing saved pool into active set: {PoolId}", rp.PoolId);
+                    activePoolIds.Add(rp.PoolId);
+                }
+                else
+                {
+                    _logger.LogWarning("🗑️ Removing saved pool not found on-chain: {PoolId}", rp.PoolId);
+                    await _storageService.DeleteRealPoolAsync(rp.PoolId);
+                }
+            }
+        }
         
         // Step 2: Validate each stored pool still exists and works
         var validPoolIds = new List<string>();

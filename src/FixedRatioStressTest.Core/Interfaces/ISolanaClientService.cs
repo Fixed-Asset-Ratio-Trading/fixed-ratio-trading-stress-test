@@ -50,6 +50,7 @@ public interface ISolanaClientService
     Task<List<string>> GetOrCreateManagedPoolsAsync(int targetPoolCount = 3);
     Task<bool> ValidatePoolExistsAsync(string poolId);
     Task CleanupInvalidPoolsAsync();
+    Task ValidateAndCleanupSavedPoolsAsync();
     
     // Core wallet and real blockchain pool management
     Task<CoreWalletConfig> GetOrCreateCoreWalletAsync();
