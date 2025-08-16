@@ -40,7 +40,7 @@ public class ThreadManager : IThreadManager
         try
         {
             var poolState = await _solanaClient.GetPoolStateAsync(config.PoolId);
-            _logger.LogInformation("Validated pool {PoolId} exists for thread creation", config.PoolId);
+            _logger.LogDebug("Validated pool {PoolId} exists for thread creation", config.PoolId);
         }
         catch (KeyNotFoundException)
         {
@@ -57,7 +57,7 @@ public class ThreadManager : IThreadManager
         config.PrivateKey = wallet.Account.PrivateKey.KeyBytes;
         config.WalletMnemonic = wallet.Mnemonic?.ToString() ?? ""; // Handle null mnemonic gracefully
 
-        _logger.LogInformation("Generated wallet for thread {ThreadId}: {PublicKey} for pool {PoolId}", 
+        _logger.LogDebug("Generated wallet for thread {ThreadId}: {PublicKey} for pool {PoolId}", 
             config.ThreadId, config.PublicKey, config.PoolId);
 
         await _storageService.SaveThreadConfigAsync(config.ThreadId, config);
@@ -65,7 +65,7 @@ public class ThreadManager : IThreadManager
         var statistics = new ThreadStatistics();
         await _storageService.SaveThreadStatisticsAsync(config.ThreadId, statistics);
 
-        _logger.LogInformation("Created thread {ThreadId} of type {ThreadType} for pool {PoolId}",
+        _logger.LogDebug("Created thread {ThreadId} of type {ThreadType} for pool {PoolId}",
             config.ThreadId, config.ThreadType, config.PoolId);
 
         return config.ThreadId;
@@ -96,11 +96,11 @@ public class ThreadManager : IThreadManager
                 var airdropSuccess = !string.IsNullOrEmpty(airdropSignature);
                 if (airdropSuccess)
                 {
-                    _logger.LogInformation("Requested SOL airdrop for thread {ThreadId}", threadId);
+                    _logger.LogDebug("Requested SOL airdrop for thread {ThreadId}", threadId);
                 }
             }
             
-            _logger.LogInformation("Restored wallet for thread {ThreadId}: {PublicKey}, SOL balance: {Balance} lamports", 
+            _logger.LogDebug("Restored wallet for thread {ThreadId}: {PublicKey}, SOL balance: {Balance} lamports", 
                 threadId, config.PublicKey, solBalance);
         }
 
@@ -112,7 +112,7 @@ public class ThreadManager : IThreadManager
         config.Status = ThreadStatus.Running;
         await _storageService.SaveThreadConfigAsync(threadId, config);
 
-        _logger.LogInformation("Started thread {ThreadId}", threadId);
+        _logger.LogDebug("Started thread {ThreadId}", threadId);
     }
 
     public async Task StopThreadAsync(string threadId)
@@ -126,13 +126,13 @@ public class ThreadManager : IThreadManager
         config.Status = ThreadStatus.Stopped;
         await _storageService.SaveThreadConfigAsync(threadId, config);
 
-        _logger.LogInformation("Stopped thread {ThreadId}", threadId);
+        _logger.LogDebug("Stopped thread {ThreadId}", threadId);
     }
 
     public async Task DeleteThreadAsync(string threadId)
     {
         await StopThreadAsync(threadId);
-        _logger.LogInformation("Deleted thread {ThreadId}", threadId);
+        _logger.LogDebug("Deleted thread {ThreadId}", threadId);
     }
 
     public Task<ThreadConfig> GetThreadConfigAsync(string threadId)
@@ -155,7 +155,7 @@ public class ThreadManager : IThreadManager
             return;
         }
 
-        _logger.LogInformation("Starting {ThreadType} worker thread {ThreadId} for pool {PoolId}", 
+        _logger.LogDebug("Starting {ThreadType} worker thread {ThreadId} for pool {PoolId}", 
             config.ThreadType, config.ThreadId, config.PoolId);
 
         while (!cancellationToken.IsCancellationRequested)
@@ -208,7 +208,7 @@ public class ThreadManager : IThreadManager
             }
             catch (OperationCanceledException)
             {
-                _logger.LogInformation("Thread {ThreadId} operation cancelled", config.ThreadId);
+                _logger.LogDebug("Thread {ThreadId} operation cancelled", config.ThreadId);
                 break;
             }
             catch (Exception ex)
@@ -229,7 +229,7 @@ public class ThreadManager : IThreadManager
             }
         }
 
-        _logger.LogInformation("Worker thread {ThreadId} completed", config.ThreadId);
+        _logger.LogDebug("Worker thread {ThreadId} completed", config.ThreadId);
     }
 
     private async Task<(string operationType, bool success, ulong volume)> HandleDepositOperation(
@@ -256,7 +256,7 @@ public class ThreadManager : IThreadManager
                 wallet, config.PoolId, config.TokenType, depositAmount);
             var signature = result.TransactionSignature;
 
-            _logger.LogInformation("Deposit completed for thread {ThreadId}: {Amount} lamports, signature: {Signature}", 
+            _logger.LogDebug("Deposit completed for thread {ThreadId}: {Amount} lamports, signature: {Signature}", 
                 config.ThreadId, depositAmount, signature);
 
             return ("deposit", true, depositAmount);
@@ -294,7 +294,7 @@ public class ThreadManager : IThreadManager
                 wallet, config.PoolId, config.TokenType, lpTokenAmount);
             var signature = result.TransactionSignature;
 
-            _logger.LogInformation("Withdrawal completed for thread {ThreadId}: {Amount} LP tokens, signature: {Signature}", 
+            _logger.LogDebug("Withdrawal completed for thread {ThreadId}: {Amount} LP tokens, signature: {Signature}", 
                 config.ThreadId, lpTokenAmount, signature);
 
             return ("withdrawal", true, lpTokenAmount);
@@ -331,7 +331,7 @@ public class ThreadManager : IThreadManager
                 wallet, config.PoolId, config.SwapDirection ?? SwapDirection.AToB, swapAmount, minimumOutput);
             var signature = result.TransactionSignature;
 
-            _logger.LogInformation("Swap completed for thread {ThreadId}: {Amount} input, direction: {Direction}, signature: {Signature}", 
+            _logger.LogDebug("Swap completed for thread {ThreadId}: {Amount} input, direction: {Direction}, signature: {Signature}", 
                 config.ThreadId, swapAmount, config.SwapDirection, signature);
 
             return ("swap", true, swapAmount);

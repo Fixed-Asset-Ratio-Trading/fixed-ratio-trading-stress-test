@@ -139,7 +139,7 @@ public class JsonFileStorageService : IStorageService
         
         if (!File.Exists(filePath))
         {
-            _logger.LogInformation("No active pools file found, returning empty list");
+            _logger.LogDebug("No active pools file found, returning empty list");
             return new List<string>();
         }
 
@@ -147,7 +147,7 @@ public class JsonFileStorageService : IStorageService
         {
             var json = await File.ReadAllTextAsync(filePath);
             var poolIds = JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
-            _logger.LogInformation("Loaded {Count} active pool IDs from storage", poolIds.Count);
+            _logger.LogDebug("Loaded {Count} active pool IDs from storage", poolIds.Count);
             return poolIds;
         }
         catch (Exception ex)
@@ -165,7 +165,7 @@ public class JsonFileStorageService : IStorageService
         {
             var json = JsonSerializer.Serialize(poolIds, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(filePath, json);
-            _logger.LogInformation("Saved {Count} active pool IDs to storage", poolIds.Count);
+            _logger.LogDebug("Saved {Count} active pool IDs to storage", poolIds.Count);
         }
         catch (Exception ex)
         {
@@ -182,14 +182,14 @@ public class JsonFileStorageService : IStorageService
             if (File.Exists(poolDataPath))
             {
                 File.Delete(poolDataPath);
-                _logger.LogInformation("Cleaned up pool data for {PoolId}", poolId);
+                _logger.LogDebug("Cleaned up pool data for {PoolId}", poolId);
             }
 
             var poolStatsPath = Path.Combine(_dataDirectory, "pool_stats", $"{poolId}.json");
             if (File.Exists(poolStatsPath))
             {
                 File.Delete(poolStatsPath);
-                _logger.LogInformation("Cleaned up pool statistics for {PoolId}", poolId);
+                _logger.LogDebug("Cleaned up pool statistics for {PoolId}", poolId);
             }
         }
         catch (Exception ex)
@@ -243,7 +243,7 @@ public class JsonFileStorageService : IStorageService
                 }
             }
 
-            _logger.LogInformation("Cleaned up {Count} threads associated with pool {PoolId}", cleanupCount, poolId);
+            _logger.LogDebug("Cleaned up {Count} threads associated with pool {PoolId}", cleanupCount, poolId);
         }
         catch (Exception ex)
         {
@@ -257,7 +257,7 @@ public class JsonFileStorageService : IStorageService
         
         if (!File.Exists(filePath))
         {
-            _logger.LogInformation("No core wallet file found");
+            _logger.LogDebug("No core wallet file found");
             return null;
         }
 
@@ -265,7 +265,7 @@ public class JsonFileStorageService : IStorageService
         {
             var json = await File.ReadAllTextAsync(filePath);
             var wallet = JsonSerializer.Deserialize<CoreWalletConfig>(json);
-            _logger.LogInformation("Loaded core wallet: {PublicKey}", wallet?.PublicKey);
+            _logger.LogDebug("Loaded core wallet: {PublicKey}", wallet?.PublicKey);
             return wallet;
         }
         catch (Exception ex)
@@ -283,7 +283,7 @@ public class JsonFileStorageService : IStorageService
         {
             var json = JsonSerializer.Serialize(wallet, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(filePath, json);
-            _logger.LogInformation("Saved core wallet: {PublicKey}", wallet.PublicKey);
+            _logger.LogDebug("Saved core wallet: {PublicKey}", wallet.PublicKey);
         }
         catch (Exception ex)
         {
@@ -298,7 +298,7 @@ public class JsonFileStorageService : IStorageService
         
         if (!File.Exists(filePath))
         {
-            _logger.LogInformation("No real pools file found, returning empty list");
+            _logger.LogDebug("No real pools file found, returning empty list");
             return new List<RealPoolData>();
         }
 
@@ -306,7 +306,7 @@ public class JsonFileStorageService : IStorageService
         {
             var json = await File.ReadAllTextAsync(filePath);
             var pools = JsonSerializer.Deserialize<List<RealPoolData>>(json) ?? new List<RealPoolData>();
-            _logger.LogInformation("Loaded {Count} real pools from storage", pools.Count);
+            _logger.LogDebug("Loaded {Count} real pools from storage", pools.Count);
             return pools;
         }
         catch (Exception ex)
@@ -337,7 +337,7 @@ public class JsonFileStorageService : IStorageService
         {
             var json = JsonSerializer.Serialize(pools, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(filePath, json);
-            _logger.LogInformation("Saved real pool: {PoolId}", pool.PoolId);
+            _logger.LogDebug("Saved real pool: {PoolId}", pool.PoolId);
         }
         catch (Exception ex)
         {
@@ -361,7 +361,7 @@ public class JsonFileStorageService : IStorageService
             {
                 var json = JsonSerializer.Serialize(pools, new JsonSerializerOptions { WriteIndented = true });
                 await File.WriteAllTextAsync(filePath, json);
-                _logger.LogInformation("Deleted real pool: {PoolId}", poolId);
+                _logger.LogDebug("Deleted real pool: {PoolId}", poolId);
             }
             catch (Exception ex)
             {
@@ -377,7 +377,7 @@ public class JsonFileStorageService : IStorageService
         
         if (!File.Exists(filePath))
         {
-            _logger.LogInformation("No token mints file found, returning empty list");
+            _logger.LogDebug("No token mints file found, returning empty list");
             return new List<StressTestTokenMint>();
         }
 
@@ -385,7 +385,7 @@ public class JsonFileStorageService : IStorageService
         {
             var json = await File.ReadAllTextAsync(filePath);
             var mints = JsonSerializer.Deserialize<List<StressTestTokenMint>>(json) ?? new List<StressTestTokenMint>();
-            _logger.LogInformation("Loaded {Count} token mints from storage", mints.Count);
+            _logger.LogDebug("Loaded {Count} token mints from storage", mints.Count);
             return mints;
         }
         catch (Exception ex)
@@ -416,7 +416,7 @@ public class JsonFileStorageService : IStorageService
         {
             var json = JsonSerializer.Serialize(mints, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(filePath, json);
-            _logger.LogInformation("Saved token mint: {MintAddress} ({Decimals} decimals)", tokenMint.MintAddress, tokenMint.Decimals);
+            _logger.LogDebug("Saved token mint: {MintAddress} ({Decimals} decimals)", tokenMint.MintAddress, tokenMint.Decimals);
         }
         catch (Exception ex)
         {

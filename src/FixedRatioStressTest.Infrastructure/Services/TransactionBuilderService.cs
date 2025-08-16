@@ -46,7 +46,7 @@ public class TransactionBuilderService : ITransactionBuilderService
             try
             {
                 Console.WriteLine("[DEBUG] BuildCreatePoolTransactionAsync starting...");
-                _logger.LogInformation("Building pool creation transaction");
+                _logger.LogDebug("Building pool creation transaction");
                 
                 var programId = new PublicKey(_config.ProgramId);
                 var systemStatePda = DeriveSystemStatePda();
@@ -227,7 +227,7 @@ public class TransactionBuilderService : ITransactionBuilderService
                 
                 result.SimulationSummary = summary.ToString();
                 
-                _logger.LogInformation("Pool creation simulation (format validation) completed successfully");
+                _logger.LogDebug("Pool creation simulation (format validation) completed successfully");
                 
                 return result;
             }
@@ -252,7 +252,7 @@ public class TransactionBuilderService : ITransactionBuilderService
     {
         try
         {
-                _logger.LogInformation("Building deposit transaction for {Amount} basis points", amountInBasisPoints);
+                _logger.LogDebug("Building deposit transaction for {Amount} basis points", amountInBasisPoints);
                 
                 // Pool state will be passed as parameter to avoid circular dependency
                 var programId = new PublicKey(_config.ProgramId);
@@ -337,7 +337,7 @@ public class TransactionBuilderService : ITransactionBuilderService
     {
         try
         {
-                _logger.LogInformation("Building withdrawal transaction for {Amount} LP tokens", lpTokenAmountToBurn);
+                _logger.LogDebug("Building withdrawal transaction for {Amount} LP tokens", lpTokenAmountToBurn);
                 
                 // Pool state will be passed as parameter to avoid circular dependency
                 var programId = new PublicKey(_config.ProgramId);
@@ -423,7 +423,7 @@ public class TransactionBuilderService : ITransactionBuilderService
     {
         try
         {
-                _logger.LogInformation("Building swap transaction: {Direction} {Amount} basis points", 
+                _logger.LogDebug("Building swap transaction: {Direction} {Amount} basis points", 
                     direction, inputAmountBasisPoints);
                 
                 // Pool state will be passed as parameter to avoid circular dependency
@@ -508,7 +508,7 @@ public class TransactionBuilderService : ITransactionBuilderService
     {
         try
         {
-                _logger.LogInformation("Building transfer transaction for {Amount} tokens to {To}", 
+                _logger.LogDebug("Building transfer transaction for {Amount} tokens to {To}", 
                     amount, toWalletAddress);
                 
                 var mint = new PublicKey(tokenMint);
@@ -559,7 +559,7 @@ public class TransactionBuilderService : ITransactionBuilderService
     {
         try
         {
-                _logger.LogInformation("Building mint transaction for {Amount} tokens to {Recipient}", 
+                _logger.LogDebug("Building mint transaction for {Amount} tokens to {Recipient}", 
                     amount, recipientAddress);
                 
                 var mint = new PublicKey(tokenMint);
@@ -669,7 +669,7 @@ public class TransactionBuilderService : ITransactionBuilderService
         {
             try
             {
-                _logger.LogInformation("Building InitializeProgram transaction for treasury system");
+                _logger.LogDebug("Building InitializeProgram transaction for treasury system");
                 
                 var programId = new PublicKey(_config.ProgramId);
                 var systemStatePda = DeriveSystemStatePda();
@@ -705,7 +705,7 @@ public class TransactionBuilderService : ITransactionBuilderService
                     Data = instructionData
                 };
                 
-                _logger.LogInformation("Created InitializeProgram instruction with {AccountCount} accounts", accounts.Count);
+                _logger.LogDebug("Created InitializeProgram instruction with {AccountCount} accounts", accounts.Count);
                 
                 // Get compute units
                 var computeUnits = _computeUnitManager.GetComputeUnits("process_initialize_program");
@@ -719,7 +719,7 @@ public class TransactionBuilderService : ITransactionBuilderService
                     .AddInstruction(instruction);
                 
                 var result = builder.Build(systemAuthority);
-                _logger.LogInformation("Built InitializeProgram transaction: {Size} bytes", result.Length);
+                _logger.LogDebug("Built InitializeProgram transaction: {Size} bytes", result.Length);
                 
                 return result;
             }
@@ -929,16 +929,16 @@ public class TransactionBuilderService : ITransactionBuilderService
             ulong ratioANumerator = (ulong)(1 * Math.Pow(10, orderedDecimalsA));                    // Always 1.0 display unit
             ulong ratioBDenominator = (ulong)(ratioWholeNumber * Math.Pow(10, orderedDecimalsB));   // N display units
             
-            _logger.LogInformation("🔢 Basis Points Calculation:");
-            _logger.LogInformation("   Original Token A: {TokenA} ({DecimalsA} decimals)", tokenAMint, tokenADecimals);
-            _logger.LogInformation("   Original Token B: {TokenB} ({DecimalsB} decimals)", tokenBMint, tokenBDecimals);
-            _logger.LogInformation("   Ordered Token A: {TokenA} ({DecimalsA} decimals)", orderedTokenA, orderedDecimalsA);
-            _logger.LogInformation("   Ordered Token B: {TokenB} ({DecimalsB} decimals)", orderedTokenB, orderedDecimalsB);
-            _logger.LogInformation("   Ratio Direction: {Direction}", ratioDirection);
-            _logger.LogInformation("   Needs Inversion: {NeedsInversion}", needsInversion);
-            _logger.LogInformation("   Input Ratio: {Ratio}", ratioWholeNumber);
-            _logger.LogInformation("   Final Basis Points: {Numerator}:{Denominator}", ratioANumerator, ratioBDenominator);
-            _logger.LogInformation("   Display Verification: {DisplayA} : {DisplayB}", 
+            _logger.LogDebug("🔢 Basis Points Calculation:");
+            _logger.LogDebug("   Original Token A: {TokenA} ({DecimalsA} decimals)", tokenAMint, tokenADecimals);
+            _logger.LogDebug("   Original Token B: {TokenB} ({DecimalsB} decimals)", tokenBMint, tokenBDecimals);
+            _logger.LogDebug("   Ordered Token A: {TokenA} ({DecimalsA} decimals)", orderedTokenA, orderedDecimalsA);
+            _logger.LogDebug("   Ordered Token B: {TokenB} ({DecimalsB} decimals)", orderedTokenB, orderedDecimalsB);
+            _logger.LogDebug("   Ratio Direction: {Direction}", ratioDirection);
+            _logger.LogDebug("   Needs Inversion: {NeedsInversion}", needsInversion);
+            _logger.LogDebug("   Input Ratio: {Ratio}", ratioWholeNumber);
+            _logger.LogDebug("   Final Basis Points: {Numerator}:{Denominator}", ratioANumerator, ratioBDenominator);
+            _logger.LogDebug("   Display Verification: {DisplayA} : {DisplayB}", 
                 ratioANumerator / Math.Pow(10, orderedDecimalsA), 
                 ratioBDenominator / Math.Pow(10, orderedDecimalsB));
             

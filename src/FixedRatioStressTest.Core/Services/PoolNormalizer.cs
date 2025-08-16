@@ -56,7 +56,7 @@ namespace FixedRatioStressTest.Core.Services
                     WasSwapped = true
                 };
                 
-                _logger.LogInformation("After normalization: TokenA={TokenA}, TokenB={TokenB}, RatioA={RatioA}, RatioB={RatioB}",
+                _logger.LogDebug("After normalization: TokenA={TokenA}, TokenB={TokenB}, RatioA={RatioA}, RatioB={RatioB}",
                     config.TokenAMint, config.TokenBMint, config.RatioANumerator, config.RatioBDenominator);
                 
                 return config;
@@ -94,7 +94,7 @@ namespace FixedRatioStressTest.Core.Services
             
             // Log the exchange rate for verification
             var rate = (double)config.RatioBDenominator / config.RatioANumerator;
-            _logger.LogInformation("Pool ratio validated: 1 Token A = {Rate:F6} Token B", rate);
+            _logger.LogDebug("Pool ratio validated: 1 Token A = {Rate:F6} Token B", rate);
             
             // Additional validation for extreme ratios
             if (rate > 1_000_000 || rate < 0.000001)

@@ -107,7 +107,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
                 await svc.StartAsync(cancellationToken);
             }
 
-            _logger.LogInformation("Stress Test Engine started successfully");
+            _logger.LogDebug("Stress Test Engine started successfully");
             await ChangeStateAsync(ServiceState.Started, "Engine startup complete");
         }
         catch (Exception ex)
@@ -152,7 +152,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
             }
 
             await ChangeStateAsync(ServiceState.Stopped, "Engine shutdown complete");
-            _logger.LogInformation("Stress Test Engine stopped");
+            _logger.LogDebug("Stress Test Engine stopped");
         }
         catch (Exception ex)
         {
@@ -189,7 +189,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
             }
 
             await ChangeStateAsync(ServiceState.Paused, "Engine paused");
-            _logger.LogInformation("Engine paused");
+            _logger.LogDebug("Engine paused");
         }
         finally
         {
@@ -220,7 +220,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
 
             _logger.LogDebug("[Engine] ResumeAsync invoked");
             await ChangeStateAsync(ServiceState.Started, "Engine resumed");
-            _logger.LogInformation("Engine resumed");
+            _logger.LogDebug("Engine resumed");
         }
         finally
         {
