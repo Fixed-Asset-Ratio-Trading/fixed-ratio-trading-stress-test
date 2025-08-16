@@ -36,6 +36,12 @@ public class WindowsServiceLoggerOptions
     /// Gets or sets the minimum log level.
     /// </summary>
     public LogLevel MinimumLevel { get; set; } = LogLevel.Information;
+
+    /// <summary>
+    /// Gets or sets whether to suppress debug messages from being logged.
+    /// When true, debug messages will be filtered out even if MinimumLevel is set to Debug.
+    /// </summary>
+    public bool SuppressDebugMessages { get; set; } = false;
 }
 
 /// <summary>

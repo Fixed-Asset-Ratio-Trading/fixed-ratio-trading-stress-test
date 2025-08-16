@@ -81,7 +81,18 @@ public class WindowsServiceLogger : ILogger
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
     /// <inheritdoc />
-    public bool IsEnabled(LogLevel logLevel) => logLevel >= _options.MinimumLevel;
+    public bool IsEnabled(LogLevel logLevel)
+    {
+        // Check minimum level first
+        if (logLevel < _options.MinimumLevel)
+            return false;
+
+        // If debug messages are suppressed, filter them out
+        if (_options.SuppressDebugMessages && logLevel == LogLevel.Debug)
+            return false;
+
+        return true;
+    }
 
     /// <inheritdoc />
     public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
