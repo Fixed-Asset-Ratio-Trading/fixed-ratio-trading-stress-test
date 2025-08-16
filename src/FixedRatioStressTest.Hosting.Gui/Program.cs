@@ -180,6 +180,96 @@ internal static class Program
 			});
 		});
 
+		// Minimal JSON-RPC endpoint to support scripts (core_wallet_status, list_pools)
+		app.MapPost("/api/jsonrpc", async (HttpContext ctx) =>
+		{
+			var body = await new StreamReader(ctx.Request.Body).ReadToEndAsync();
+			var request = JsonSerializer.Deserialize<FixedRatioStressTest.Common.Models.JsonRpcRequest>(body);
+			if (request == null || string.IsNullOrWhiteSpace(request.Method))
+			{
+				return Results.BadRequest(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
+				{
+					Error = new FixedRatioStressTest.Common.Models.JsonRpcError { Code = -32600, Message = "Invalid Request" },
+					Id = request?.Id
+				});
+			}
+
+			try
+			{
+				switch (request.Method)
+				{
+					case "core_wallet_status":
+					{
+						logger.LogInformation("RPC core_wallet_status requested (in-proc)");
+						var wallet = await solana.GetOrCreateCoreWalletAsync();
+						var result = new
+						{
+							publicKey = wallet.PublicKey,
+							currentSolBalanceLamports = wallet.CurrentSolBalance,
+							currentSolBalance = wallet.CurrentSolBalance / 1_000_000_000.0,
+							minimumSolBalanceLamports = wallet.MinimumSolBalance,
+							minimumSolBalance = wallet.MinimumSolBalance / 1_000_000_000.0,
+							createdAt = wallet.CreatedAt,
+							lastBalanceCheck = wallet.LastBalanceCheck
+						};
+						return Results.Ok(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
+						{
+							Result = result,
+							Id = request.Id
+						});
+					}
+					case "list_pools":
+					{
+						logger.LogInformation("RPC list_pools requested (in-proc JSON-RPC)");
+						var pools = await solana.GetAllPoolsAsync();
+						var result = new
+						{
+							pools = pools.Select(p => new
+							{
+								poolId = p.PoolId,
+								tokenAMint = p.TokenAMint,
+								tokenBMint = p.TokenBMint,
+								tokenADecimals = p.TokenADecimals,
+								tokenBDecimals = p.TokenBDecimals,
+								ratioDisplay = p.RatioDisplay,
+								isBlockchainPool = p.IsBlockchainPool,
+								createdAt = p.CreatedAt
+							}).ToList(),
+							totalCount = pools.Count
+						};
+						return Results.Ok(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
+						{
+							Result = result,
+							Id = request.Id
+						});
+					}
+					default:
+						return Results.BadRequest(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
+						{
+							Error = new FixedRatioStressTest.Common.Models.JsonRpcError
+							{
+								Code = -32601,
+								Message = $"Method {request.Method} not found"
+							},
+							Id = request.Id
+						});
+				}
+			}
+			catch (Exception ex)
+			{
+				logger.LogError(ex, "Error handling JSON-RPC request {Method}", request.Method);
+				return Results.Ok(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
+				{
+					Error = new FixedRatioStressTest.Common.Models.JsonRpcError
+					{
+						Code = -32603,
+						Message = "Internal error"
+					},
+					Id = request.Id
+				});
+			}
+		});
+
 		app.RunAsync();
 	}
 

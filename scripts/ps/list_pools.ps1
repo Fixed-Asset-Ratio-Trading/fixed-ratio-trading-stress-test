@@ -1,8 +1,8 @@
-$ErrorActionPreference = 'Stop'
-
 param(
     [string]$BaseUrl = "http://localhost:8080"
 )
+
+$ErrorActionPreference = 'Stop'
 
 $url = "$BaseUrl/api/pool/list"
 Write-Host "GET $url" -ForegroundColor Cyan

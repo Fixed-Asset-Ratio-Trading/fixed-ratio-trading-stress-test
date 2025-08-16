@@ -1,8 +1,8 @@
-$ErrorActionPreference = 'Stop'
-
 param(
     [string]$BaseUrl = "http://localhost:8080"
 )
+
+$ErrorActionPreference = 'Stop'
 
 $url = "$BaseUrl/api/jsonrpc"
 $body = @{ method = 'core_wallet_status'; id = [guid]::NewGuid().ToString(); params = @{} } | ConvertTo-Json
