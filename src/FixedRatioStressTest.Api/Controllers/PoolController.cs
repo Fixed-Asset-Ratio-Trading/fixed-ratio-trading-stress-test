@@ -11,13 +11,11 @@ public class PoolController : ControllerBase
 {
     private readonly ISolanaClientService _solanaClient;
     private readonly ILogger<PoolController> _logger;
-    private readonly IEventLogger _eventLogger;
 
-    public PoolController(ISolanaClientService solanaClient, ILogger<PoolController> logger, IEventLogger eventLogger)
+    public PoolController(ISolanaClientService solanaClient, ILogger<PoolController> logger)
     {
         _solanaClient = solanaClient;
         _logger = logger;
-        _eventLogger = eventLogger;
     }
 
     /// <summary>
@@ -28,11 +26,10 @@ public class PoolController : ControllerBase
     {
         try
         {
-            _logger.LogInformation("Pool creation simulation request received.");
-            _eventLogger.LogInformation("RPC simulate_pool requested");
+            _logger.LogInformation("RPC simulate_pool requested: pool creation simulation");
             var parameters = System.Text.Json.JsonSerializer.Deserialize<PoolCreationParams>(request.Params?.ToString() ?? "{}");
             var simulationResult = await _solanaClient.SimulatePoolCreationAsync(parameters);
-            _eventLogger.LogInformation("RPC simulate_pool completed: Success={0}", simulationResult.IsSuccessful);
+            _logger.LogInformation("RPC simulate_pool completed: Success={Success}", simulationResult.IsSuccessful);
             
             return Ok(new JsonRpcResponse<TransactionSimulationResult>
             {
@@ -60,8 +57,7 @@ public class PoolController : ControllerBase
     {
         try
         {
-            _logger.LogInformation("Pool creation request received: {Request}", request.Method);
-            _eventLogger.LogInformation("RPC create_pool requested");
+            _logger.LogInformation("RPC create_pool requested: {Method}", request.Method);
             
             // Parse parameters from JSON-RPC request
             var parameters = ParsePoolCreationParams(request.Params);
@@ -83,7 +79,7 @@ public class PoolController : ControllerBase
                 IsBlockchainPool = true // Always true for real pools
             };
 
-            _eventLogger.LogInformation("RPC create_pool completed: PoolId={0}", result.PoolId);
+            _logger.LogInformation("RPC create_pool completed: PoolId={PoolId}", result.PoolId);
 
             return Ok(new JsonRpcResponse<PoolCreationResult>
             {
@@ -93,8 +89,7 @@ public class PoolController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error creating pool");
-            _eventLogger.LogError("RPC create_pool failed", ex);
+            _logger.LogError(ex, "RPC create_pool failed");
             return Ok(new JsonRpcResponse<PoolCreationResult>
             {
                 Error = new JsonRpcError
@@ -115,8 +110,7 @@ public class PoolController : ControllerBase
     {
         try
         {
-            _logger.LogInformation("List pools request received.");
-            _eventLogger.LogInformation("RPC list_pools requested");
+            _logger.LogInformation("RPC list_pools requested");
             var pools = await _solanaClient.GetAllPoolsAsync();
             
             var result = new PoolListResult
@@ -135,7 +129,7 @@ public class PoolController : ControllerBase
                 TotalCount = pools.Count
             };
 
-            _eventLogger.LogInformation("RPC list_pools completed: Count={0}", result.TotalCount);
+            _logger.LogInformation("RPC list_pools completed: Count={Count}", result.TotalCount);
 
             return Ok(new JsonRpcResponse<PoolListResult>
             {
@@ -145,8 +139,7 @@ public class PoolController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error listing pools");
-            _eventLogger.LogError("RPC list_pools failed", ex);
+            _logger.LogError(ex, "RPC list_pools failed");
             return Ok(new JsonRpcResponse<PoolListResult>
             {
                 Error = new JsonRpcError
@@ -167,11 +160,10 @@ public class PoolController : ControllerBase
     {
         try
         {
-            _logger.LogInformation("Get pool request: {PoolId}", poolId);
-            _eventLogger.LogInformation("RPC get_pool requested: PoolId={0}", poolId);
+            _logger.LogInformation("RPC get_pool requested: PoolId={PoolId}", poolId);
             var pool = await _solanaClient.GetPoolStateAsync(poolId);
             
-            _eventLogger.LogInformation("RPC get_pool completed: PoolId={0}", poolId);
+            _logger.LogInformation("RPC get_pool completed: PoolId={PoolId}", poolId);
             return Ok(new JsonRpcResponse<PoolState>
             {
                 Result = pool,
@@ -180,7 +172,7 @@ public class PoolController : ControllerBase
         }
         catch (KeyNotFoundException)
         {
-            _eventLogger.LogWarning("RPC get_pool not found: PoolId={0}", poolId);
+            _logger.LogWarning("RPC get_pool not found: PoolId={PoolId}", poolId);
             return Ok(new JsonRpcResponse<PoolState>
             {
                 Error = new JsonRpcError
@@ -214,8 +206,7 @@ public class PoolController : ControllerBase
     {
         try
         {
-            _logger.LogInformation("JSON-RPC request received: {Method}", request.Method);
-            _eventLogger.LogInformation("RPC {0} received via /api/jsonrpc", request.Method);
+            _logger.LogInformation("JSON-RPC request received via /api/jsonrpc: {Method}", request.Method);
             return request.Method switch
             {
                 "create_pool" => await CreatePool(request),
@@ -234,8 +225,7 @@ public class PoolController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error in JSON-RPC endpoint");
-            _eventLogger.LogError("RPC endpoint error", ex);
+            _logger.LogError(ex, "RPC endpoint error");
             return Ok(new JsonRpcResponse<object>
             {
                 Error = new JsonRpcError

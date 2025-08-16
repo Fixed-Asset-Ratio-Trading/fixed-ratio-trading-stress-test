@@ -3,6 +3,7 @@ using FixedRatioStressTest.Abstractions;
 using FixedRatioStressTest.Common.Models;
 using FixedRatioStressTest.Core.Interfaces;
 using FixedRatioStressTest.Core.Services;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 
@@ -20,7 +21,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
     private readonly ISolanaClientService _solanaClientService;
     private readonly IContractVersionService _contractVersionService;
     private readonly IStorageService _storageService;
-    private readonly IEventLogger _eventLogger;
+    private readonly ILogger<StressTestEngine> _logger;
     private readonly IConfiguration _configuration;
     private readonly IComputeUnitManager _computeUnitManager;
 
@@ -46,7 +47,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
         IContractVersionService contractVersionService,
         IStorageService storageService,
         IComputeUnitManager computeUnitManager,
-        IEventLogger eventLogger,
+        ILogger<StressTestEngine> logger,
         IConfiguration configuration)
     {
         _threadManager = threadManager;
@@ -54,7 +55,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
         _contractVersionService = contractVersionService;
         _storageService = storageService;
         _computeUnitManager = computeUnitManager;
-        _eventLogger = eventLogger;
+        _logger = logger;
         _configuration = configuration;
 
         // Construct the startup pipeline.
@@ -84,34 +85,34 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
         {
             if (_state != ServiceState.Stopped)
             {
-                _eventLogger.LogWarning("StartAsync ignored because state is {State}", _state);
+                _logger.LogWarning("StartAsync ignored because state is {State}", _state);
                 return;
             }
 
-            _eventLogger.LogDebug("[Engine] StartAsync invoked");
+            _logger.LogDebug("[Engine] StartAsync invoked");
             await ChangeStateAsync(ServiceState.Starting, "Engine startup initiated");
 
             // Apply Windows optimizations if running on Windows.
             if (OperatingSystem.IsWindows())
             {
-                _eventLogger.LogDebug("[Engine] Applying Windows performance optimizations");
+                _logger.LogDebug("[Engine] Applying Windows performance optimizations");
                 WindowsPerformanceOptimizer.OptimizeForThreadripper();
             }
 
             // Start startup services in order.
-            _eventLogger.LogDebug("[Engine] Starting {0} startup services", _startupServices.Count);
+            _logger.LogDebug("[Engine] Starting {0} startup services", _startupServices.Count);
             foreach (var svc in _startupServices)
             {
-                _eventLogger.LogDebug("[Engine] Starting service {0}", svc.GetType().Name);
+                _logger.LogDebug("[Engine] Starting service {0}", svc.GetType().Name);
                 await svc.StartAsync(cancellationToken);
             }
 
-            _eventLogger.LogInformation("Stress Test Engine started successfully");
+            _logger.LogInformation("Stress Test Engine started successfully");
             await ChangeStateAsync(ServiceState.Started, "Engine startup complete");
         }
         catch (Exception ex)
         {
-            _eventLogger.LogCritical("Engine failed to start", ex);
+            _logger.LogCritical(ex, "Engine failed to start");
             await ChangeStateAsync(ServiceState.Error, ex.Message);
             throw;
         }
@@ -132,12 +133,12 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
                 return;
             }
 
-            _eventLogger.LogDebug("[Engine] StopAsync invoked");
+            _logger.LogDebug("[Engine] StopAsync invoked");
             await ChangeStateAsync(ServiceState.Stopping, "Engine shutdown initiated");
 
             // Stop all running stress threads gracefully.
             var allThreads = await _threadManager.GetAllThreadsAsync();
-            _eventLogger.LogDebug("[Engine] Stopping {0} running threads", allThreads.Count(t => t.Status == ThreadStatus.Running));
+            _logger.LogDebug("[Engine] Stopping {0} running threads", allThreads.Count(t => t.Status == ThreadStatus.Running));
             foreach (var t in allThreads.Where(t => t.Status == ThreadStatus.Running))
             {
                 await _threadManager.StopThreadAsync(t.ThreadId);
@@ -146,16 +147,16 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
             // Stop services in reverse order.
             foreach (var svc in Enumerable.Reverse(_startupServices))
             {
-                _eventLogger.LogDebug("[Engine] Stopping service {0}", svc.GetType().Name);
+                _logger.LogDebug("[Engine] Stopping service {0}", svc.GetType().Name);
                 await svc.StopAsync(cancellationToken);
             }
 
             await ChangeStateAsync(ServiceState.Stopped, "Engine shutdown complete");
-            _eventLogger.LogInformation("Stress Test Engine stopped");
+            _logger.LogInformation("Stress Test Engine stopped");
         }
         catch (Exception ex)
         {
-            _eventLogger.LogError("Error during engine shutdown", ex);
+            _logger.LogError(ex, "Error during engine shutdown");
             await ChangeStateAsync(ServiceState.Error, ex.Message);
             throw;
         }
@@ -173,11 +174,11 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
         {
             if (_state != ServiceState.Started)
             {
-                _eventLogger.LogWarning("PauseAsync ignored because state is {State}", _state);
+                _logger.LogWarning("PauseAsync ignored because state is {State}", _state);
                 return;
             }
 
-            _eventLogger.LogDebug("[Engine] PauseAsync invoked");
+            _logger.LogDebug("[Engine] PauseAsync invoked");
             await ChangeStateAsync(ServiceState.Pausing, "Pausing engine");
 
             // For now, we stop threads to simulate pause. A future enhancement can add native pause.
@@ -188,7 +189,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
             }
 
             await ChangeStateAsync(ServiceState.Paused, "Engine paused");
-            _eventLogger.LogInformation("Engine paused");
+            _logger.LogInformation("Engine paused");
         }
         finally
         {
@@ -204,7 +205,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
         {
             if (_state != ServiceState.Paused)
             {
-                _eventLogger.LogWarning("ResumeAsync ignored because state is {State}", _state);
+                _logger.LogWarning("ResumeAsync ignored because state is {State}", _state);
                 return;
             }
 
@@ -217,9 +218,9 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
                 await _threadManager.StartThreadAsync(t.ThreadId);
             }
 
-            _eventLogger.LogDebug("[Engine] ResumeAsync invoked");
+            _logger.LogDebug("[Engine] ResumeAsync invoked");
             await ChangeStateAsync(ServiceState.Started, "Engine resumed");
-            _eventLogger.LogInformation("Engine resumed");
+            _logger.LogInformation("Engine resumed");
         }
         finally
         {

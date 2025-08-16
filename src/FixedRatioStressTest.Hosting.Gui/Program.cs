@@ -56,8 +56,7 @@ internal static class Program
         services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
         services.AddSingleton<IThreadManager, FixedRatioStressTest.Core.Services.ThreadManager>();
 
-        // For backward compatibility during migration, create IEventLogger adapter
-        services.AddSingleton<IEventLogger, LoggerEventLoggerAdapter>();
+        // All logging uses ILogger<T> with GUI providers; no legacy adapters
 
         // Service lifecycle engine
         services.AddSingleton<IServiceLifecycle, StressTestEngine>(sp => new StressTestEngine(
@@ -66,7 +65,7 @@ internal static class Program
             sp.GetRequiredService<IContractVersionService>(),
             sp.GetRequiredService<IStorageService>(),
             sp.GetRequiredService<IComputeUnitManager>(),
-            sp.GetRequiredService<IEventLogger>(),
+            sp.GetRequiredService<ILogger<StressTestEngine>>(),
             sp.GetRequiredService<IConfiguration>()));
 
         // GUI host
@@ -85,29 +84,4 @@ internal static class Program
     }
 }
 
-// Temporary adapter to bridge ILogger<T> to IEventLogger during migration
-internal class LoggerEventLoggerAdapter : IEventLogger
-{
-    private readonly ILogger<LoggerEventLoggerAdapter> _logger;
-    public event EventHandler<LogEventArgs>? LogEntryCreated;
-
-    public LoggerEventLoggerAdapter(ILogger<LoggerEventLoggerAdapter> logger)
-    {
-        _logger = logger;
-    }
-
-    public void LogInformation(string message, params object[] args) =>
-        _logger.LogInformation(message, args);
-
-    public void LogWarning(string message, params object[] args) =>
-        _logger.LogWarning(message, args);
-
-    public void LogError(string message, Exception? exception, params object[] args) =>
-        _logger.LogError(exception, message, args);
-
-    public void LogCritical(string message, Exception? exception, params object[] args) =>
-        _logger.LogCritical(exception, message, args);
-
-    public void LogDebug(string message, params object[] args) =>
-        _logger.LogDebug(message, args);
-}
+// No legacy adapters; GUI subscribes to GuiLoggerProvider events

@@ -97,8 +97,7 @@ builder.Services.AddSingleton<ISolanaClientService, SolanaClientService>();
 builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
 builder.Services.AddSingleton<IThreadManager, ThreadManager>();
 
-// For backward compatibility during migration, create IEventLogger adapter
-builder.Services.AddSingleton<IEventLogger, LoggerEventLoggerAdapter>();
+// Remove legacy IEventLogger adapter (fully migrated to ILogger<T>)
 
 // Register engine
 builder.Services.AddSingleton<IServiceLifecycle, StressTestEngine>(sp =>
@@ -109,7 +108,7 @@ builder.Services.AddSingleton<IServiceLifecycle, StressTestEngine>(sp =>
         sp.GetRequiredService<IContractVersionService>(),
         sp.GetRequiredService<IStorageService>(),
         sp.GetRequiredService<IComputeUnitManager>(),
-        sp.GetRequiredService<IEventLogger>(),
+        sp.GetRequiredService<ILogger<StressTestEngine>>(),
         sp.GetRequiredService<IConfiguration>());
 });
 
@@ -162,29 +161,4 @@ logger.LogInformation("Listening on port {Port}", builder.Configuration.GetValue
 
 app.Run();
 
-// Temporary adapter to bridge ILogger<T> to IEventLogger during migration
-internal class LoggerEventLoggerAdapter : IEventLogger
-{
-    private readonly ILogger<LoggerEventLoggerAdapter> _logger;
-    public event EventHandler<LogEventArgs>? LogEntryCreated;
-
-    public LoggerEventLoggerAdapter(ILogger<LoggerEventLoggerAdapter> logger)
-    {
-        _logger = logger;
-    }
-
-    public void LogInformation(string message, params object[] args) =>
-        _logger.LogInformation(message, args);
-
-    public void LogWarning(string message, params object[] args) =>
-        _logger.LogWarning(message, args);
-
-    public void LogError(string message, Exception? exception, params object[] args) =>
-        _logger.LogError(exception, message, args);
-
-    public void LogCritical(string message, Exception? exception, params object[] args) =>
-        _logger.LogCritical(exception, message, args);
-
-    public void LogDebug(string message, params object[] args) =>
-        _logger.LogDebug(message, args);
-}
+// All logging now goes through ILogger<T> and custom providers

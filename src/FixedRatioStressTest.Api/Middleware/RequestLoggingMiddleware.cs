@@ -10,13 +10,11 @@ namespace FixedRatioStressTest.Api.Middleware
     {
         private readonly RequestDelegate _next;
         private readonly ILogger<RequestLoggingMiddleware> _logger;
-        private readonly IEventLogger _eventLogger;
 
-        public RequestLoggingMiddleware(RequestDelegate next, ILogger<RequestLoggingMiddleware> logger, IEventLogger eventLogger)
+        public RequestLoggingMiddleware(RequestDelegate next, ILogger<RequestLoggingMiddleware> logger)
         {
             _next = next;
             _logger = logger;
-            _eventLogger = eventLogger;
         }
 
         public async Task Invoke(HttpContext context)
@@ -51,12 +49,10 @@ namespace FixedRatioStressTest.Api.Middleware
             if (bodyPreview is null)
             {
                 _logger.LogInformation("HTTP {Method} {Path}{Query}", method, path, query);
-                _eventLogger.LogInformation("HTTP {0} {1}{2}", method, path, query);
             }
             else
             {
                 _logger.LogInformation("HTTP {Method} {Path}{Query} Body: {Body}", method, path, query, bodyPreview);
-                _eventLogger.LogInformation("HTTP {0} {1}{2} Body: {3}", method, path, query, bodyPreview);
             }
 
             await _next(context);
@@ -64,7 +60,6 @@ namespace FixedRatioStressTest.Api.Middleware
             sw.Stop();
             int status = context.Response?.StatusCode ?? 0;
             _logger.LogInformation("HTTP {Method} {Path}{Query} -> {Status} in {ElapsedMs}ms", method, path, query, status, sw.ElapsedMilliseconds);
-            _eventLogger.LogInformation("HTTP {0} {1}{2} -> {3} in {4}ms", method, path, query, status, sw.ElapsedMilliseconds);
         }
     }
 }

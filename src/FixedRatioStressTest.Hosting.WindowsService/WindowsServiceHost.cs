@@ -1,5 +1,6 @@
 using FixedRatioStressTest.Abstractions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace FixedRatioStressTest.Hosting.WindowsService;
 
@@ -10,21 +11,21 @@ namespace FixedRatioStressTest.Hosting.WindowsService;
 public sealed class WindowsServiceHost : BackgroundService, IServiceHost
 {
     private readonly IServiceLifecycle _engine;
-    private readonly IEventLogger _eventLogger;
+    private readonly ILogger<WindowsServiceHost> _logger;
 
     /// <inheritdoc />
     public string HostType => "WindowsService";
 
-    public WindowsServiceHost(IServiceLifecycle engine, IEventLogger eventLogger)
+    public WindowsServiceHost(IServiceLifecycle engine, ILogger<WindowsServiceHost> logger)
     {
         _engine = engine;
-        _eventLogger = eventLogger;
+        _logger = logger;
     }
 
     /// <inheritdoc />
     public Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        _eventLogger.LogInformation("Windows Service Host initializing");
+        _logger.LogInformation("Windows Service Host initializing");
         return Task.CompletedTask;
     }
 
@@ -56,7 +57,7 @@ public sealed class WindowsServiceHost : BackgroundService, IServiceHost
         }
         catch (Exception ex)
         {
-            _eventLogger.LogCritical("Windows Service Host crashed", ex);
+            _logger.LogCritical(ex, "Windows Service Host crashed");
             throw;
         }
         finally
@@ -68,7 +69,7 @@ public sealed class WindowsServiceHost : BackgroundService, IServiceHost
     /// <inheritdoc />
     public async Task ShutdownAsync(CancellationToken cancellationToken = default)
     {
-        _eventLogger.LogInformation("Windows Service Host shutting down");
+        _logger.LogInformation("Windows Service Host shutting down");
         await _engine.StopAsync(cancellationToken);
     }
 }
