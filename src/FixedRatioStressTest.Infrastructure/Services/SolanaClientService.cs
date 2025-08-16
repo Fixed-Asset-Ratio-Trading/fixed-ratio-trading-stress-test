@@ -798,7 +798,7 @@ public async Task CleanupInvalidPoolsAsync()
             }
             
             // Step 3: Check SOL balance and attempt funding if needed
-            await EnsureCoreWalletHasSufficientSolAsync(coreWallet);
+            await CheckCoreWalletBalanceAsync(coreWallet);
             // Extra: wait until balance is visible at Finalized commitment (stabilizes preflight)
             try
             {
@@ -1831,6 +1831,31 @@ public async Task CleanupInvalidPoolsAsync()
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to validate saved pools");
+            }
+        }
+
+        public async Task CheckCoreWalletBalanceAsync(CoreWalletConfig coreWallet)
+        {
+            try
+            {
+                _logger.LogDebug("💰 Checking core wallet SOL balance for pool creation...");
+                var currentBalance = await GetSolBalanceAsync(coreWallet.PublicKey);
+                _logger.LogDebug("Current core wallet balance: {Balance} SOL", currentBalance / 1_000_000_000.0);
+
+                if (currentBalance < 1_200_000_000UL) // Minimum 1.2 SOL for registration fee
+                {
+                    var errorMsg = $"Core wallet balance is insufficient for pool creation. " +
+                                  $"Current: {currentBalance / 1_000_000_000.0:F2} SOL, " +
+                                  $"Required: {1_200_000_000UL / 1_000_000_000.0:F2} SOL minimum.";
+                    _logger.LogError(errorMsg);
+                    throw new InvalidOperationException(errorMsg);
+                }
+                _logger.LogDebug("✅ Core wallet has sufficient SOL balance for pool creation.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to check core wallet balance");
+                throw;
             }
         }
     }

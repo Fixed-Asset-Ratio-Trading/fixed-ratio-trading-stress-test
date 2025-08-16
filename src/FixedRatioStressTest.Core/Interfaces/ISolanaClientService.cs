@@ -55,6 +55,7 @@ public interface ISolanaClientService
     
     // Core wallet and real blockchain pool management
     Task<CoreWalletConfig> GetOrCreateCoreWalletAsync();
+    Task CheckCoreWalletBalanceAsync(CoreWalletConfig coreWallet);
     Task<RealPoolData> CreateRealPoolAsync(PoolCreationParams parameters);
     Task<bool> ValidateRealPoolAsync(RealPoolData pool);
     Task<List<RealPoolData>> GetRealPoolsAsync();

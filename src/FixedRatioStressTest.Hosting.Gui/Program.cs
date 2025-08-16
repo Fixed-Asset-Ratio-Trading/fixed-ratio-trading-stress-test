@@ -218,6 +218,73 @@ internal static class Program
 							Id = request.Id
 						});
 					}
+					case "airdrop_sol":
+					{
+						logger.LogInformation("RPC airdrop_sol requested (in-proc)");
+						var wallet = await solana.GetOrCreateCoreWalletAsync();
+						
+						// Parse parameters
+						ulong lamports = 1_000_000_000; // Default 1 SOL
+						if (request.Params is System.Text.Json.JsonElement element && element.ValueKind == System.Text.Json.JsonValueKind.Object)
+						{
+							if (element.TryGetProperty("lamports", out var lamportsElement))
+							{
+								lamports = lamportsElement.GetUInt64();
+							}
+							else if (element.TryGetProperty("sol_amount", out var solElement))
+							{
+								lamports = (ulong)(solElement.GetDouble() * 1_000_000_000);
+							}
+						}
+						
+						var signature = await solana.RequestAirdropAsync(wallet.PublicKey, lamports);
+						var result = new
+						{
+							walletAddress = wallet.PublicKey,
+							lamports = lamports,
+							solAmount = lamports / 1_000_000_000.0,
+							signature = signature,
+							status = "success"
+						};
+						return Results.Ok(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
+						{
+							Result = result,
+							Id = request.Id
+						});
+					}
+					case "create_pool_random":
+					{
+						logger.LogInformation("RPC create_pool_random requested (in-proc)");
+						
+						// Generate random parameters
+						var random = new Random();
+						var parameters = new FixedRatioStressTest.Common.Models.PoolCreationParams
+						{
+							TokenADecimals = random.Next(6, 10), // 6-9 decimals
+							TokenBDecimals = random.Next(6, 10), // 6-9 decimals
+							RatioWholeNumber = (ulong)random.Next(100, 10000), // 100-9999 ratio
+							RatioDirection = random.Next(2) == 0 ? "a_to_b" : "b_to_a"
+						};
+						
+						var realPool = await solana.CreateRealPoolAsync(parameters);
+						var result = new
+						{
+							poolId = realPool.PoolId,
+							tokenAMint = realPool.TokenAMint,
+							tokenBMint = realPool.TokenBMint,
+							tokenADecimals = realPool.TokenADecimals,
+							tokenBDecimals = realPool.TokenBDecimals,
+							ratioDisplay = realPool.RatioDisplay,
+							creationSignature = realPool.CreationSignature,
+							status = "created",
+							isBlockchainPool = true
+						};
+						return Results.Ok(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
+						{
+							Result = result,
+							Id = request.Id
+						});
+					}
 					case "list_pools":
 					{
 						logger.LogInformation("RPC list_pools requested (in-proc JSON-RPC)");
