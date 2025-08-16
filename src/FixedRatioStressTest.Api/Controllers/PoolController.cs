@@ -212,6 +212,7 @@ public class PoolController : ControllerBase
                 "create_pool" => await CreatePool(request),
                 "list_pools" => await ListPools(),
                 "get_pool" => await GetPoolById(request),
+                "core_wallet_status" => await GetCoreWalletStatus(request),
                 _ => BadRequest(new JsonRpcResponse<object>
                 {
                     Error = new JsonRpcError
@@ -256,6 +257,48 @@ public class PoolController : ControllerBase
         }
 
         return await GetPool(poolId);
+    }
+
+    private async Task<ActionResult<JsonRpcResponse<CoreWalletStatusResult>>> GetCoreWalletStatus(JsonRpcRequest request)
+    {
+        try
+        {
+            _logger.LogInformation("RPC core_wallet_status requested");
+            var wallet = await _solanaClient.GetOrCreateCoreWalletAsync();
+
+            var result = new CoreWalletStatusResult
+            {
+                PublicKey = wallet.PublicKey,
+                CurrentSolBalanceLamports = wallet.CurrentSolBalance,
+                CurrentSolBalance = wallet.CurrentSolBalance / 1_000_000_000.0,
+                MinimumSolBalanceLamports = wallet.MinimumSolBalance,
+                MinimumSolBalance = wallet.MinimumSolBalance / 1_000_000_000.0,
+                CreatedAt = wallet.CreatedAt,
+                LastBalanceCheck = wallet.LastBalanceCheck
+            };
+
+            _logger.LogInformation("RPC core_wallet_status completed: PublicKey={PublicKey} BalanceSOL={Balance}",
+                result.PublicKey, result.CurrentSolBalance);
+
+            return Ok(new JsonRpcResponse<CoreWalletStatusResult>
+            {
+                Result = result,
+                Id = request.Id
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "RPC core_wallet_status failed");
+            return Ok(new JsonRpcResponse<CoreWalletStatusResult>
+            {
+                Error = new JsonRpcError
+                {
+                    Code = -1,
+                    Message = ex.Message
+                },
+                Id = request.Id
+            });
+        }
     }
 
     private PoolCreationParams ParsePoolCreationParams(object? parameters)
@@ -352,4 +395,15 @@ public class PoolSummary
     public string RatioDisplay { get; set; } = string.Empty;
     public bool IsBlockchainPool { get; set; }
     public DateTime CreatedAt { get; set; }
+}
+
+public class CoreWalletStatusResult
+{
+    public string PublicKey { get; set; } = string.Empty;
+    public ulong CurrentSolBalanceLamports { get; set; }
+    public double CurrentSolBalance { get; set; }
+    public ulong MinimumSolBalanceLamports { get; set; }
+    public double MinimumSolBalance { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime LastBalanceCheck { get; set; }
 }
