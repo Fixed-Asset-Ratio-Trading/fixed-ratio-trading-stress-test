@@ -17,6 +17,7 @@
     <ProjectReference Include="..\FixedRatioStressTest.Core\FixedRatioStressTest.Core.csproj" />
     <ProjectReference Include="..\FixedRatioStressTest.Infrastructure\FixedRatioStressTest.Infrastructure.csproj" />
     <ProjectReference Include="..\FixedRatioStressTest.Common\FixedRatioStressTest.Common.csproj" />
+    <ProjectReference Include="..\FixedRatioStressTest.Logging\FixedRatioStressTest.Logging.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -29,6 +30,7 @@
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
   </ItemGroup>
 

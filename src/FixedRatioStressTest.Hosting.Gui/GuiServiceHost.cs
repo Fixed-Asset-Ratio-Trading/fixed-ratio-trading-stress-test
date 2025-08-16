@@ -1,6 +1,12 @@
 using System.Drawing;
+using System.Text;
 using System.Windows.Forms;
 using FixedRatioStressTest.Abstractions;
+using FixedRatioStressTest.Logging.Gui;
+using FixedRatioStressTest.Logging.Models;
+using FixedRatioStressTest.Logging.Transport;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace FixedRatioStressTest.Hosting.Gui;
 
@@ -11,7 +17,9 @@ namespace FixedRatioStressTest.Hosting.Gui;
 public sealed class GuiServiceHost : Form, IServiceHost
 {
     private readonly IServiceLifecycle _engine;
-    private readonly GuiEventLogger _eventLogger;
+    private readonly GuiLoggerProvider _loggerProvider;
+    private readonly UdpLogListenerService? _udpListener;
+    private readonly IConfiguration _configuration;
 
     // UI controls
     private Button _startButton = null!;
@@ -25,20 +33,20 @@ public sealed class GuiServiceHost : Form, IServiceHost
     private ListView _listView = null!;
 
     // In-memory log buffer to enable filtering
-    private readonly List<LogEventArgs> _logBuffer = new();
-    private Microsoft.Extensions.Logging.LogLevel _filterLevel = Microsoft.Extensions.Logging.LogLevel.Trace;
-    private EventLogListener? _eventLogListener;
-    private FileLogListener? _fileLogListener;
-    private UdpLogListener? _udpLogListener;
+    private readonly List<LogMessageEventArgs> _logBuffer = new();
+    private LogLevel _filterLevel = LogLevel.Trace;
 
     public string HostType => "GUI";
 
-    public GuiServiceHost(IServiceLifecycle engine, GuiEventLogger logger)
+    public GuiServiceHost(IServiceLifecycle engine, GuiLoggerProvider loggerProvider, 
+        UdpLogListenerService? udpListener, IConfiguration configuration)
     {
         _engine = engine;
-        _eventLogger = logger;
+        _loggerProvider = loggerProvider;
+        _udpListener = udpListener;
+        _configuration = configuration;
 
-        Text = "Service Manager - Test Mode";
+        Text = _configuration.GetValue<string>("GuiSettings:WindowTitle", "Service Manager - Test Mode");
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(900, 650);
 
@@ -48,18 +56,29 @@ public sealed class GuiServiceHost : Form, IServiceHost
 
     public Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        // Subscribe to events. Defer UI updates until handle is created to avoid cross-thread errors.
+        // Subscribe to engine state changes
         _engine.StateChanged += (_, __) =>
         {
             if (IsHandleCreated)
                 BeginInvoke(new Action(UpdateUiState));
         };
 
-        _eventLogger.LogEntryCreated += (_, e) =>
+        // Subscribe to log events from the logger provider
+        _loggerProvider.LogMessageReceived += (_, e) =>
         {
             if (IsHandleCreated)
                 BeginInvoke(new Action(() => OnLog(e)));
         };
+
+        // Subscribe to UDP log events if listener is available
+        if (_udpListener != null)
+        {
+            _udpListener.LogMessageReceived += (_, e) =>
+            {
+                if (IsHandleCreated)
+                    BeginInvoke(new Action(() => OnLog(e)));
+            };
+        }
 
         if (IsHandleCreated)
         {
@@ -70,23 +89,12 @@ public sealed class GuiServiceHost : Form, IServiceHost
             HandleCreated += (_, __) => UpdateUiState();
         }
 
-        // Start listening to Windows Application EventLog to mirror service logs into GUI
-        _eventLogListener = new EventLogListener(_eventLogger);
-        _eventLogListener.Start();
-        // Mirror API file log into GUI if present
-        var apiLogPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "FixedRatioStressTest.Api", "bin", "Debug", "net8.0", "logs", "api.log");
-        _fileLogListener = new FileLogListener(_eventLogger, apiLogPath);
-        _fileLogListener.Start();
-        // UDP live log listener
-        _udpLogListener = new UdpLogListener(_eventLogger, 51999);
-        _udpLogListener.Start();
-
         return Task.CompletedTask;
     }
 
     public Task RunAsync(CancellationToken cancellationToken)
     {
-        Application.Run(this);
+        // This method is not used for WinForms - Application.Run is called from Program.cs
         return Task.CompletedTask;
     }
 
@@ -96,207 +104,284 @@ public sealed class GuiServiceHost : Form, IServiceHost
         {
             await _engine.StopAsync(cancellationToken);
         }
-        _eventLogListener?.Dispose();
-        _fileLogListener?.Dispose();
-        _udpLogListener?.Dispose();
+        
         Close();
     }
 
     private void InitializeComponent()
     {
-        var topPanel = new Panel { Dock = DockStyle.Top, Height = 80, Padding = new Padding(10) };
-        var filterPanel = new Panel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(10, 0, 10, 0) };
-        var contentPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10) };
-
-        _startButton = new Button { Text = "▶ Start", Width = 90, Height = 32, Left = 10, Top = 10 };
-        _stopButton = new Button { Text = "⏹ Stop", Width = 90, Height = 32, Left = 110, Top = 10 };
-        _pauseButton = new Button { Text = "⏸ Pause", Width = 90, Height = 32, Left = 210, Top = 10 };
-        _statusLabel = new Label { Text = "Status: Stopped", Left = 320, Top = 15, AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold) };
-
-        topPanel.Controls.AddRange(new Control[] { _startButton, _stopButton, _pauseButton, _statusLabel });
-
-        _logFilter = new ComboBox { Left = 10, Width = 110, DropDownStyle = ComboBoxStyle.DropDownList };
-        _logFilter.Items.AddRange(new object[] { "All Logs", "Debug+", "Info+", "Warning+", "Error+", "Critical" });
-        _logFilter.SelectedIndex = 0;
-        _autoScroll = new CheckBox { Text = "Auto-scroll", Left = 140, Top = 8, Width = 100, Checked = true };
-        _clearLogs = new Button { Text = "Clear", Left = 250, Width = 80, Height = 24, Top = 5 };
-        _copyLogs = new Button { Text = "Copy", Left = 340, Width = 80, Height = 24, Top = 5, Enabled = false };
-
-        filterPanel.Controls.AddRange(new Control[] { _logFilter, _autoScroll, _clearLogs, _copyLogs });
-
+        _startButton = new Button { Text = "Start", Width = 80, Height = 30 };
+        _stopButton = new Button { Text = "Stop", Width = 80, Height = 30, Enabled = false };
+        _pauseButton = new Button { Text = "Pause", Width = 80, Height = 30, Enabled = false };
+        _statusLabel = new Label { Text = "Status: Stopped", AutoSize = true };
+        
+        _logFilter = new ComboBox 
+        { 
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 100,
+            Items = { "All", "Debug+", "Info+", "Warning+", "Error+", "Critical" }
+        };
+        _logFilter.SelectedIndex = 1; // Default to Debug+
+        
+        _autoScroll = new CheckBox 
+        { 
+            Text = "Auto-scroll", 
+            Checked = _configuration.GetValue<bool>("GuiSettings:AutoScroll", true),
+            AutoSize = true 
+        };
+        
+        _clearLogs = new Button { Text = "Clear", Width = 60, Height = 25 };
+        _copyLogs = new Button { Text = "Copy", Width = 60, Height = 25 };
+        
         _listView = new ListView
         {
-            Dock = DockStyle.Fill,
             View = View.Details,
             FullRowSelect = true,
             GridLines = true,
             MultiSelect = true,
-            HideSelection = false
+            Dock = DockStyle.Fill,
+            Font = new Font("Consolas", 9F)
         };
-        _listView.Columns.Add("Time", 120);
-        _listView.Columns.Add("Level", 80);
-        _listView.Columns.Add("Message", -2);
+        
+        _listView.Columns.Add("Time", 140);
+        _listView.Columns.Add("Level", 60);
+        _listView.Columns.Add("Message", 600);
 
-        contentPanel.Controls.Add(_listView);
-
-        Controls.Add(contentPanel);
-        Controls.Add(filterPanel);
+        // Layout
+        var topPanel = new Panel { Dock = DockStyle.Top, Height = 80 };
+        var controlPanel = new FlowLayoutPanel 
+        { 
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            AutoSize = true,
+            Location = new Point(10, 10)
+        };
+        
+        controlPanel.Controls.AddRange(new Control[] 
+        { 
+            _startButton, _stopButton, _pauseButton,
+            new Label { Text = "  " }, // Spacer
+            _statusLabel 
+        });
+        
+        var logPanel = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            AutoSize = true,
+            Location = new Point(10, 45)
+        };
+        
+        logPanel.Controls.AddRange(new Control[]
+        {
+            new Label { Text = "Filter: ", AutoSize = true },
+            _logFilter,
+            new Label { Text = "  " }, // Spacer
+            _autoScroll,
+            new Label { Text = "  " }, // Spacer
+            _clearLogs,
+            _copyLogs
+        });
+        
+        topPanel.Controls.Add(controlPanel);
+        topPanel.Controls.Add(logPanel);
+        
+        Controls.Add(_listView);
         Controls.Add(topPanel);
     }
 
     private void HookEvents()
     {
-        _startButton.Click += async (_, __) => await SafeRun(_engine.StartAsync, "Failed to start service");
-        _stopButton.Click += async (_, __) => await SafeRun(_engine.StopAsync, "Failed to stop service");
-        _pauseButton.Click += async (_, __) =>
-        {
-            if (_engine.State == ServiceState.Started)
-                await SafeRun(_engine.PauseAsync, "Failed to pause service");
-            else if (_engine.State == ServiceState.Paused)
-                await SafeRun(_engine.ResumeAsync, "Failed to resume service");
-        };
-
-        _clearLogs.Click += (_, __) => { _logBuffer.Clear(); _listView.Items.Clear(); _copyLogs.Enabled = false; };
+        _startButton.Click += async (_, __) => await OnStart();
+        _stopButton.Click += async (_, __) => await OnStop();
+        _pauseButton.Click += async (_, __) => await OnPause();
+        _clearLogs.Click += (_, __) => { _logBuffer.Clear(); _listView.Items.Clear(); };
         _copyLogs.Click += (_, __) => CopySelectedLogsToClipboard();
-        _listView.SelectedIndexChanged += (_, __) => _copyLogs.Enabled = _listView.SelectedItems.Count > 0;
-        _logFilter.SelectedIndexChanged += (_, __) => { UpdateFilterLevel(); RefreshLogList(); };
-
-        FormClosing += async (s, e) =>
-        {
-            if (_engine.State != ServiceState.Stopped)
-            {
-                e.Cancel = true;
-                await _engine.StopAsync();
-                Close();
-            }
-        };
-    }
-
-    private async Task SafeRun(Func<CancellationToken, Task> op, string errorTitle)
-    {
-        try { await op(CancellationToken.None); }
-        catch (Exception ex) { MessageBox.Show(ex.Message, errorTitle, MessageBoxButtons.OK, MessageBoxIcon.Error); }
-        finally { UpdateUiState(); }
+        _logFilter.SelectedIndexChanged += (_, __) => UpdateFilterLevel();
     }
 
     private void UpdateFilterLevel()
     {
         _filterLevel = _logFilter.SelectedIndex switch
         {
-            0 => Microsoft.Extensions.Logging.LogLevel.Trace,
-            1 => Microsoft.Extensions.Logging.LogLevel.Debug,
-            2 => Microsoft.Extensions.Logging.LogLevel.Information,
-            3 => Microsoft.Extensions.Logging.LogLevel.Warning,
-            4 => Microsoft.Extensions.Logging.LogLevel.Error,
-            5 => Microsoft.Extensions.Logging.LogLevel.Critical,
-            _ => Microsoft.Extensions.Logging.LogLevel.Information
+            0 => LogLevel.Trace,        // All
+            1 => LogLevel.Debug,        // Debug+
+            2 => LogLevel.Information, // Info+
+            3 => LogLevel.Warning,     // Warning+
+            4 => LogLevel.Error,       // Error+
+            5 => LogLevel.Critical,    // Critical
+            _ => LogLevel.Debug
         };
+        RefreshLogList();
     }
 
-    private void OnLog(LogEventArgs e)
+    private void OnLog(LogMessageEventArgs e)
     {
-        _logBuffer.Insert(0, e);
+        _logBuffer.Add(e);
+        TrimBuffer();
+        
         if (ShouldDisplay(e))
         {
             InsertListItem(e);
             TrimListView();
+            
             if (_autoScroll.Checked && _listView.Items.Count > 0)
-                _listView.EnsureVisible(0);
+            {
+                _listView.EnsureVisible(_listView.Items.Count - 1);
+            }
         }
-        TrimBuffer();
     }
 
-    private bool ShouldDisplay(LogEventArgs e)
-        => _filterLevel == Microsoft.Extensions.Logging.LogLevel.Critical
-            ? e.Level == Microsoft.Extensions.Logging.LogLevel.Critical
-            : e.Level >= _filterLevel;
+    private bool ShouldDisplay(LogMessageEventArgs e) => e.Level >= _filterLevel;
 
-    private void InsertListItem(LogEventArgs e)
+    private void InsertListItem(LogMessageEventArgs e)
     {
-        var item = new ListViewItem(e.Timestamp.ToString("HH:mm:ss.fff"));
-        item.SubItems.Add(ShortLevel(e.Level));
-        item.SubItems.Add(e.Message);
-        Colorize(item, e.Level);
-        _listView.Items.Insert(0, item);
+        var item = new ListViewItem(e.Timestamp.ToString("HH:mm:ss.fff"))
+        {
+            SubItems = 
+            { 
+                ShortLevel(e.Level),
+                e.Message
+            },
+            ForeColor = Colorize(e.Level)
+        };
+        _listView.Items.Add(item);
     }
 
     private void RefreshLogList()
     {
         _listView.BeginUpdate();
-        _listView.Items.Clear();
-        foreach (var e in _logBuffer.Where(ShouldDisplay).Take(1000))
-            InsertListItem(e);
-        _listView.EndUpdate();
+        try
+        {
+            _listView.Items.Clear();
+            foreach (var entry in _logBuffer.Where(ShouldDisplay))
+            {
+                InsertListItem(entry);
+            }
+        }
+        finally
+        {
+            _listView.EndUpdate();
+        }
+    }
+
+    private static string ShortLevel(LogLevel level) => level switch
+    {
+        LogLevel.Trace => "TRCE",
+        LogLevel.Debug => "DBUG",
+        LogLevel.Information => "INFO",
+        LogLevel.Warning => "WARN",
+        LogLevel.Error => "FAIL",
+        LogLevel.Critical => "CRIT",
+        _ => "NONE"
+    };
+
+    private static Color Colorize(LogLevel level) => level switch
+    {
+        LogLevel.Debug => Color.Gray,
+        LogLevel.Information => Color.Black,
+        LogLevel.Warning => Color.Orange,
+        LogLevel.Error => Color.Red,
+        LogLevel.Critical => Color.DarkRed,
+        _ => Color.Black
+    };
+
+    private void TrimListView()
+    {
+        var maxDisplay = _configuration.GetValue<int>("GuiSettings:MaxDisplayEntries", 1000);
+        while (_listView.Items.Count > maxDisplay)
+        {
+            _listView.Items.RemoveAt(0);
+        }
+    }
+
+    private void TrimBuffer()
+    {
+        var maxEntries = _configuration.GetValue<int>("GuiSettings:MaxLogEntries", 5000);
+        while (_logBuffer.Count > maxEntries)
+        {
+            _logBuffer.RemoveAt(0);
+        }
+    }
+
+    private void UpdateUiState()
+    {
+        var state = _engine.State;
+        _statusLabel.Text = $"Status: {state}";
+        
+        _startButton.Enabled = state == ServiceState.Stopped;
+        _stopButton.Enabled = state != ServiceState.Stopped;
+        _pauseButton.Enabled = state == ServiceState.Started;
+        _pauseButton.Text = state == ServiceState.Paused ? "Resume" : "Pause";
+    }
+
+    private async Task OnStart()
+    {
+        try
+        {
+            _startButton.Enabled = false;
+            await _engine.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to start: {ex.Message}", "Error", 
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _startButton.Enabled = true;
+        }
+    }
+
+    private async Task OnStop()
+    {
+        try
+        {
+            _stopButton.Enabled = false;
+            await _engine.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to stop: {ex.Message}", "Error", 
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            UpdateUiState();
+        }
+    }
+
+    private async Task OnPause()
+    {
+        try
+        {
+            _pauseButton.Enabled = false;
+            if (_engine.State == ServiceState.Paused)
+            {
+                await _engine.ResumeAsync();
+            }
+            else
+            {
+                await _engine.PauseAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to pause/resume: {ex.Message}", "Error", 
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            UpdateUiState();
+        }
     }
 
     private void CopySelectedLogsToClipboard()
     {
         if (_listView.SelectedItems.Count == 0) return;
-        var lines = new List<string>(_listView.SelectedItems.Count);
+
+        var sb = new StringBuilder();
         foreach (ListViewItem item in _listView.SelectedItems)
         {
-            var time = item.SubItems[0].Text;
-            var level = item.SubItems[1].Text;
-            var message = item.SubItems[2].Text;
-            lines.Add($"{time}\t{level}\t{message}");
+            sb.AppendLine($"{item.SubItems[0].Text}\t{item.SubItems[1].Text}\t{item.SubItems[2].Text}");
         }
-        var text = string.Join(Environment.NewLine, lines);
-        try { Clipboard.SetText(text); } catch { }
+        Clipboard.SetText(sb.ToString());
     }
 
-    private static string ShortLevel(Microsoft.Extensions.Logging.LogLevel level) => level switch
+    protected override void OnFormClosed(FormClosedEventArgs e)
     {
-        Microsoft.Extensions.Logging.LogLevel.Trace => "TRACE",
-        Microsoft.Extensions.Logging.LogLevel.Debug => "DEBUG",
-        Microsoft.Extensions.Logging.LogLevel.Information => "INFO",
-        Microsoft.Extensions.Logging.LogLevel.Warning => "WARN",
-        Microsoft.Extensions.Logging.LogLevel.Error => "ERROR",
-        Microsoft.Extensions.Logging.LogLevel.Critical => "CRIT",
-        _ => level.ToString().ToUpperInvariant()
-    };
-
-    private static void Colorize(ListViewItem item, Microsoft.Extensions.Logging.LogLevel level)
-    {
-        switch (level)
-        {
-            case Microsoft.Extensions.Logging.LogLevel.Critical:
-                item.BackColor = Color.DarkRed; item.ForeColor = Color.White; break;
-            case Microsoft.Extensions.Logging.LogLevel.Error:
-                item.BackColor = Color.MistyRose; break;
-            case Microsoft.Extensions.Logging.LogLevel.Warning:
-                item.BackColor = Color.LemonChiffon; break;
-            case Microsoft.Extensions.Logging.LogLevel.Debug:
-                item.ForeColor = Color.DimGray; break;
-        }
-    }
-
-    private void TrimListView()
-    {
-        while (_listView.Items.Count > 1000)
-            _listView.Items.RemoveAt(_listView.Items.Count - 1);
-    }
-
-    private void TrimBuffer()
-    {
-        while (_logBuffer.Count > 5000)
-            _logBuffer.RemoveAt(_logBuffer.Count - 1);
-    }
-
-    private void UpdateUiState()
-    {
-        _startButton.Enabled = _engine.State == ServiceState.Stopped;
-        _stopButton.Enabled = _engine.State is ServiceState.Started or ServiceState.Paused;
-        _pauseButton.Enabled = _engine.State is ServiceState.Started or ServiceState.Paused;
-        _pauseButton.Text = _engine.State == ServiceState.Paused ? "▶ Resume" : "⏸ Pause";
-        _statusLabel.Text = $"Status: {_engine.State}";
-        _statusLabel.ForeColor = _engine.State switch
-        {
-            ServiceState.Started => Color.Green,
-            ServiceState.Paused => Color.Orange,
-            ServiceState.Error => Color.Red,
-            _ => Color.Black
-        };
+        ShutdownAsync().GetAwaiter().GetResult();
+        base.OnFormClosed(e);
     }
 }
-
-
