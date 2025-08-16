@@ -5,8 +5,9 @@ using FixedRatioStressTest.Core.Interfaces;
 namespace FixedRatioStressTest.Core.Services;
 
 /// <summary>
-/// Hosted service that manages pool lifecycle during application startup
-/// Ensures target number of pools exist and cleans up invalid pools
+/// Hosted service that validates existing pools during application startup
+/// Only cleans up invalid pools - does NOT create new pools automatically
+/// Pools should be created on-demand via RPC calls
 /// </summary>
 public class PoolManagementStartupService : IHostedService
 {
@@ -39,11 +40,11 @@ public class PoolManagementStartupService : IHostedService
             _logger.LogInformation("🧹 Step 2: Validating and importing previously saved pools...");
             await _solanaClient.ValidateAndCleanupSavedPoolsAsync();
 
-            // Step 3: Ensure we have the target number of managed pools (reuse first, then create)
-            _logger.LogInformation("🎯 Step 3: Ensuring target pool count...");
-            var managedPools = await _solanaClient.GetOrCreateManagedPoolsAsync(targetPoolCount: 3);
+            // Step 3: Get list of currently valid pools (no automatic creation)
+            _logger.LogInformation("🎯 Step 3: Loading existing pools (no automatic creation)...");
+            var managedPools = await _solanaClient.GetOrCreateManagedPoolsAsync(targetPoolCount: 0); // 0 = don't create any new pools
 
-            _logger.LogInformation("✅ Pool management startup complete: {Count} pools ready", managedPools.Count);
+            _logger.LogInformation("✅ Pool management startup complete: {Count} existing pools found", managedPools.Count);
             
             if (managedPools.Count > 0)
             {
@@ -55,7 +56,7 @@ public class PoolManagementStartupService : IHostedService
             }
             else
             {
-                _logger.LogWarning("⚠️ No pools available - service may not function correctly without pools");
+                _logger.LogDebug("📋 No existing pools found - use RPC create_pool to create pools on demand");
             }
         }
         catch (Exception ex)
