@@ -5,6 +5,9 @@ using FixedRatioStressTest.Core.Services;
 using FixedRatioStressTest.Core.Threading;
 using FixedRatioStressTest.Infrastructure.Services;
 using FixedRatioStressTest.Api.Services;
+using FixedRatioStressTest.Logging;
+using FixedRatioStressTest.Logging.WindowsService;
+using FixedRatioStressTest.Logging.Transport;
 using Microsoft.AspNetCore.ResponseCompression;
 using System.IO.Compression;
 using FixedRatioStressTest.Api.Middleware;
@@ -16,6 +19,28 @@ if (OperatingSystem.IsWindows())
 }
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Configure logging with new unified providers
+builder.Logging.ClearProviders();
+builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
+
+// Add Windows Service logger provider (Event Log + File + UDP)
+builder.Logging.AddWindowsServiceLogger(options =>
+{
+    options.EventLogSource = "FixedRatioStressTest";
+    options.EnableFileLogging = true;
+    options.FileLogging.Path = "logs/api.log";
+    options.FileLogging.MaxSizeKB = 10240;
+    options.EnableUdpTransport = true;
+    options.UdpTransport.Endpoint = "127.0.0.1:12345";
+    options.UdpTransport.Source = "API";
+});
+
+// Optionally add console logger for debugging
+if (builder.Environment.IsDevelopment())
+{
+    builder.Logging.AddConsole();
+}
 
 // Configure Kestrel for network accessibility
 builder.WebHost.ConfigureKestrel(options =>
@@ -72,19 +97,10 @@ builder.Services.AddSingleton<ISolanaClientService, SolanaClientService>();
 builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
 builder.Services.AddSingleton<IThreadManager, ThreadManager>();
 
-// Register engine and logger for API host usage: composite -> EventViewer, file, UDP to GUI
-builder.Services.AddSingleton<IEventLogger>(sp =>
-{
-    var logFile = Path.Combine(AppContext.BaseDirectory, "logs", "api.log");
-    Directory.CreateDirectory(Path.GetDirectoryName(logFile)!);
-    var composite = new FixedRatioStressTest.Hosting.WindowsService.CompositeEventLogger(new IEventLogger[]
-    {
-        new FixedRatioStressTest.Hosting.WindowsService.WindowsEventLogger(sp.GetRequiredService<ILogger<FixedRatioStressTest.Hosting.WindowsService.WindowsEventLogger>>()),
-        new FixedRatioStressTest.Hosting.WindowsService.SimpleFileEventLogger(logFile),
-        new FixedRatioStressTest.Hosting.WindowsService.UdpEventLogger("127.0.0.1", 51999)
-    });
-    return composite;
-});
+// For backward compatibility during migration, create IEventLogger adapter
+builder.Services.AddSingleton<IEventLogger, LoggerEventLoggerAdapter>();
+
+// Register engine
 builder.Services.AddSingleton<IServiceLifecycle, StressTestEngine>(sp =>
 {
     return new StressTestEngine(
@@ -115,9 +131,6 @@ var app = builder.Build();
 // Configure the HTTP request pipeline.
 app.UseResponseCompression();
 
-// Log every incoming HTTP request and response status
-app.UseMiddleware<RequestLoggingMiddleware>();
-
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -125,6 +138,9 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors();
+
+// Add custom request logging middleware
+app.UseMiddleware<RequestLoggingMiddleware>();
 
 app.MapControllers();
 
@@ -136,7 +152,7 @@ app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.Health
 
 app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
 {
-    Predicate = _ => false
+    Predicate = _ => false // Basic liveness check, no dependencies
 });
 
 // Log startup information
@@ -145,3 +161,30 @@ logger.LogInformation("Fixed Ratio Stress Test Service started with 32-core opti
 logger.LogInformation("Listening on port {Port}", builder.Configuration.GetValue<int>("NetworkConfiguration:HttpPort", 8080));
 
 app.Run();
+
+// Temporary adapter to bridge ILogger<T> to IEventLogger during migration
+internal class LoggerEventLoggerAdapter : IEventLogger
+{
+    private readonly ILogger<LoggerEventLoggerAdapter> _logger;
+    public event EventHandler<LogEventArgs>? LogEntryCreated;
+
+    public LoggerEventLoggerAdapter(ILogger<LoggerEventLoggerAdapter> logger)
+    {
+        _logger = logger;
+    }
+
+    public void LogInformation(string message, params object[] args) =>
+        _logger.LogInformation(message, args);
+
+    public void LogWarning(string message, params object[] args) =>
+        _logger.LogWarning(message, args);
+
+    public void LogError(string message, Exception? exception, params object[] args) =>
+        _logger.LogError(exception, message, args);
+
+    public void LogCritical(string message, Exception? exception, params object[] args) =>
+        _logger.LogCritical(exception, message, args);
+
+    public void LogDebug(string message, params object[] args) =>
+        _logger.LogDebug(message, args);
+}
