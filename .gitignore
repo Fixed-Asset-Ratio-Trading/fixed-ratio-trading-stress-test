@@ -31,3 +31,14 @@ TestResult*/
 *.trx
 
 
+# Project data and logs
+/data/
+/logs/
+/src/FixedRatioStressTest.Api/data/
+# Ignore repo data and logs
+/data/
+/logs/
+/src/FixedRatioStressTest.Api/data/
+**/data/
+**/logs/
+

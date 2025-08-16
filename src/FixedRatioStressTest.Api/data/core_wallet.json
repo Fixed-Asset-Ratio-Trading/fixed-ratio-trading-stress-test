@@ -1,9 +1,0 @@
-{
-  "PrivateKey": "fS5SQj0r9vS1aDDIwkYI\u002BrXLSt33ipaesNF2BCZypql90Vo\u002BS4oz0Z0Bf0W0zFrvBL1u0AUha0og0TAq/0Ax7g==",
-  "PublicKey": "9U97efRAtxNWU8EMnE9amjbDbtrP8MEneCJvUiJH21e5",
-  "MinimumSolBalance": 10000000000,
-  "ThreadSolFunding": 1000000000,
-  "CreatedAt": "2025-08-14T15:46:46.813688Z",
-  "LastBalanceCheck": "2025-08-15T04:05:32.7815612Z",
-  "CurrentSolBalance": 0
-}
