@@ -20,6 +20,7 @@ public sealed class GuiServiceHost : Form, IServiceHost
     private readonly GuiLoggerProvider _loggerProvider;
     private readonly UdpLogListenerService? _udpListener;
     private readonly IConfiguration _configuration;
+    private bool _isShuttingDown;
 
     // UI controls
     private Button _startButton = null!;
@@ -100,12 +101,15 @@ public sealed class GuiServiceHost : Form, IServiceHost
 
     public async Task ShutdownAsync(CancellationToken cancellationToken = default)
     {
+        if (_isShuttingDown) return;
+        _isShuttingDown = true;
+
         if (_engine.State != ServiceState.Stopped)
         {
             await _engine.StopAsync(cancellationToken);
         }
-        
-        Close();
+
+        // Do NOT call Close() here, as OnFormClosed invokes ShutdownAsync, which would cause recursion
     }
 
     private void InitializeComponent()
