@@ -20,7 +20,9 @@ public sealed class GuiServiceHost : Form, IServiceHost
     private readonly GuiLoggerProvider _loggerProvider;
     private readonly UdpLogListenerService? _udpListener;
     private readonly IConfiguration _configuration;
+    private readonly InProcessApiHost _apiHost;
     private bool _isShuttingDown;
+    private bool _closeInitiated;
 
     // UI controls
     private Button _startButton = null!;
@@ -40,12 +42,13 @@ public sealed class GuiServiceHost : Form, IServiceHost
     public string HostType => "GUI";
 
     public GuiServiceHost(IServiceLifecycle engine, GuiLoggerProvider loggerProvider, 
-        UdpLogListenerService? udpListener, IConfiguration configuration)
+        UdpLogListenerService? udpListener, IConfiguration configuration, InProcessApiHost apiHost)
     {
         _engine = engine;
         _loggerProvider = loggerProvider;
         _udpListener = udpListener;
         _configuration = configuration;
+        _apiHost = apiHost;
 
         Text = _configuration.GetValue<string>("GuiSettings:WindowTitle", "Service Manager - Test Mode");
         StartPosition = FormStartPosition.CenterScreen;
@@ -103,6 +106,9 @@ public sealed class GuiServiceHost : Form, IServiceHost
     {
         if (_isShuttingDown) return;
         _isShuttingDown = true;
+
+        // Ensure API is stopped first
+        await _apiHost.StopAsync(cancellationToken);
 
         if (_engine.State != ServiceState.Stopped)
         {
@@ -325,6 +331,7 @@ public sealed class GuiServiceHost : Form, IServiceHost
         {
             _startButton.Enabled = false;
             await _engine.StartAsync();
+            await _apiHost.StartAsync();
         }
         catch (Exception ex)
         {
@@ -339,6 +346,7 @@ public sealed class GuiServiceHost : Form, IServiceHost
         try
         {
             _stopButton.Enabled = false;
+            await _apiHost.StopAsync();
             await _engine.StopAsync();
         }
         catch (Exception ex)
@@ -387,5 +395,23 @@ public sealed class GuiServiceHost : Form, IServiceHost
     {
         ShutdownAsync().GetAwaiter().GetResult();
         base.OnFormClosed(e);
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        // If the service is running or paused, route the close request through the Stop logic first
+        if ((_engine.State == ServiceState.Started || _engine.State == ServiceState.Paused) && !_closeInitiated)
+        {
+            e.Cancel = true;
+            _closeInitiated = true;
+            BeginInvoke(new Action(async () =>
+            {
+                await OnStop();
+                Close();
+            }));
+            return;
+        }
+
+        base.OnFormClosing(e);
     }
 }
