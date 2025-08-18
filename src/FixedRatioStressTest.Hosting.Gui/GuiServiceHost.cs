@@ -23,6 +23,7 @@ public sealed class GuiServiceHost : Form, IServiceHost
     private readonly InProcessApiHost _apiHost;
     private bool _isShuttingDown;
     private bool _closeInitiated;
+    private bool _stopScheduled;
 
     // UI controls
     private Button _startButton = null!;
@@ -239,6 +240,21 @@ public sealed class GuiServiceHost : Form, IServiceHost
             {
                 _listView.EnsureVisible(_listView.Items.Count - 1);
             }
+        }
+
+        // Check for RPC stop_service requested message and trigger automatic stop once
+        if (!_stopScheduled && !string.IsNullOrEmpty(e.Message) &&
+            e.Message.IndexOf("RPC stop_service requested", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            _stopScheduled = true;
+            Task.Run(async () =>
+            {
+                await Task.Delay(3000); // Wait 3 seconds
+                if (IsHandleCreated && !_isShuttingDown)
+                {
+                    BeginInvoke(new Action(() => _stopButton.PerformClick()));
+                }
+            });
         }
     }
 
