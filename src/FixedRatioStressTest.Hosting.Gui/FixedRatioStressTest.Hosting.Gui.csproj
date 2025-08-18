@@ -18,6 +18,7 @@
     <ProjectReference Include="..\FixedRatioStressTest.Infrastructure\FixedRatioStressTest.Infrastructure.csproj" />
     <ProjectReference Include="..\FixedRatioStressTest.Common\FixedRatioStressTest.Common.csproj" />
     <ProjectReference Include="..\FixedRatioStressTest.Logging\FixedRatioStressTest.Logging.csproj" />
+    <ProjectReference Include="..\FixedRatioStressTest.Web\FixedRatioStressTest.Web.csproj" />
   </ItemGroup>
 
   <ItemGroup>

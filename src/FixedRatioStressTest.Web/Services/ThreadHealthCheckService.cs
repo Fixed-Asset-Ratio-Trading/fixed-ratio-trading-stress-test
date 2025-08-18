@@ -1,7 +1,8 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using FixedRatioStressTest.Core.Interfaces;
+using Microsoft.Extensions.Logging;
 
-namespace FixedRatioStressTest.Api.Services;
+namespace FixedRatioStressTest.Web.Services;
 
 public class ThreadHealthCheckService : IHealthCheck
 {
@@ -27,7 +28,6 @@ public class ThreadHealthCheckService : IHealthCheck
         {
             var data = new Dictionary<string, object>();
             
-            // Check Solana connection
             var solanaHealthy = await _solanaClient.IsHealthyAsync();
             data["solana_healthy"] = solanaHealthy;
             
@@ -36,7 +36,6 @@ public class ThreadHealthCheckService : IHealthCheck
                 return HealthCheckResult.Unhealthy("Solana RPC connection failed", data: data);
             }
             
-            // Get thread statistics
             var threads = await _threadManager.GetAllThreadsAsync();
             var runningThreads = threads.Count(t => t.Status == Common.Models.ThreadStatus.Running);
             var errorThreads = threads.Count(t => t.Status == Common.Models.ThreadStatus.Error);
@@ -45,7 +44,6 @@ public class ThreadHealthCheckService : IHealthCheck
             data["running_threads"] = runningThreads;
             data["error_threads"] = errorThreads;
             
-            // Calculate overall operations per minute
             var totalOpsPerMinute = 0.0;
             foreach (var thread in threads.Where(t => t.Status == Common.Models.ThreadStatus.Running))
             {
@@ -63,8 +61,7 @@ public class ThreadHealthCheckService : IHealthCheck
             
             data["operations_per_minute"] = Math.Round(totalOpsPerMinute, 2);
             
-            // Determine health status
-            if (errorThreads > threads.Count * 0.5) // More than 50% threads in error
+            if (errorThreads > threads.Count * 0.5)
             {
                 return HealthCheckResult.Unhealthy("Too many threads in error state", data: data);
             }
@@ -83,3 +80,5 @@ public class ThreadHealthCheckService : IHealthCheck
         }
     }
 }
+ 
+

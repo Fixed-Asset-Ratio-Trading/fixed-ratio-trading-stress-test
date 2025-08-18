@@ -27,6 +27,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Solnet.Rpc", "src\Solnet\So
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Solnet.Programs", "src\Solnet\Solnet.Programs\Solnet.Programs.csproj", "{B5DE50AE-5C48-4A75-B4A0-3F4F9CAD4EBE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FixedRatioStressTest.Web", "src\FixedRatioStressTest.Web\FixedRatioStressTest.Web.csproj", "{815DA767-8421-4809-9888-8FDC74DE1FF5}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -157,6 +159,18 @@ Global
 		{B5DE50AE-5C48-4A75-B4A0-3F4F9CAD4EBE}.Release|x64.Build.0 = Release|Any CPU
 		{B5DE50AE-5C48-4A75-B4A0-3F4F9CAD4EBE}.Release|x86.ActiveCfg = Release|Any CPU
 		{B5DE50AE-5C48-4A75-B4A0-3F4F9CAD4EBE}.Release|x86.Build.0 = Release|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Debug|x64.Build.0 = Debug|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Debug|x86.Build.0 = Debug|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Release|x64.ActiveCfg = Release|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Release|x64.Build.0 = Release|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Release|x86.ActiveCfg = Release|Any CPU
+		{815DA767-8421-4809-9888-8FDC74DE1FF5}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -173,6 +187,7 @@ Global
 		{78A090BB-4249-4B1B-A683-79C4BE6EF266} = {816AE512-45CA-2F64-0EB2-B55555E605C7}
 		{8A5EA4DE-FA20-4D9C-BC6C-5F050F3B6286} = {816AE512-45CA-2F64-0EB2-B55555E605C7}
 		{B5DE50AE-5C48-4A75-B4A0-3F4F9CAD4EBE} = {816AE512-45CA-2F64-0EB2-B55555E605C7}
+		{815DA767-8421-4809-9888-8FDC74DE1FF5} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {E47C5BA7-F93B-4DDF-B562-F84A97B2AAE4}

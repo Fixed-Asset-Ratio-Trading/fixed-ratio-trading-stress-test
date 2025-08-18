@@ -1,7 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using FixedRatioStressTest.Core.Interfaces;
+using Microsoft.Extensions.Logging;
 
-namespace FixedRatioStressTest.Api.Controllers;
+namespace FixedRatioStressTest.Web.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
@@ -82,3 +83,5 @@ public class HealthController : ControllerBase
         }
     }
 }
+
+

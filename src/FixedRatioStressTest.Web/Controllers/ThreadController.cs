@@ -1,8 +1,9 @@
 using FixedRatioStressTest.Common.Models;
 using FixedRatioStressTest.Core.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
-namespace FixedRatioStressTest.Api.Controllers;
+namespace FixedRatioStressTest.Web.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
@@ -20,7 +21,6 @@ public class ThreadController : ControllerBase
     [HttpPost("create")]
     public async Task<ActionResult<object>> CreateThread([FromBody] JsonRpcRequest request)
     {
-        // Phase 3: Create different thread types for testing
         var random = new Random();
         var threadTypes = Enum.GetValues<ThreadType>();
         var tokenTypes = Enum.GetValues<TokenType>();
@@ -32,14 +32,13 @@ public class ThreadController : ControllerBase
         var config = new ThreadConfig
         {
             ThreadType = threadType,
-            PoolId = "pool_1", // Use mock pool from transaction builder
+            PoolId = "pool_1",
             TokenType = tokenType,
-            InitialAmount = (ulong)random.Next(100000, 10000000), // Random initial amount
+            InitialAmount = (ulong)random.Next(100000, 10000000),
             AutoRefill = random.Next(0, 2) == 1,
             ShareTokens = random.Next(0, 2) == 1
         };
         
-        // Set swap direction for swap threads
         if (threadType == ThreadType.Swap)
         {
             config.SwapDirection = swapDirections[random.Next(swapDirections.Length)];
@@ -59,8 +58,6 @@ public class ThreadController : ControllerBase
     {
         try
         {
-            // TODO: Phase 3 - Parse threadId from JSON-RPC params properly
-            // For now, get the first available thread to start
             var allThreads = await _threadManager.GetAllThreadsAsync();
             var threadToStart = allThreads.FirstOrDefault(t => t.Status == ThreadStatus.Created);
             
@@ -100,7 +97,6 @@ public class ThreadController : ControllerBase
             var config = await _threadManager.GetThreadConfigAsync(threadId);
             var statistics = await _threadManager.GetThreadStatisticsAsync(threadId);
             
-            // Create response object with masked private key for security
             var response = new
             {
                 config = new
@@ -118,7 +114,6 @@ public class ThreadController : ControllerBase
                     config.LastOperationAt,
                     config.PublicKey,
                     HasWallet = !string.IsNullOrEmpty(config.PublicKey),
-                    // Never expose private key or mnemonic in API response
                     PrivateKeySet = config.PrivateKey != null && config.PrivateKey.Length > 0,
                     MnemonicSet = !string.IsNullOrEmpty(config.WalletMnemonic)
                 },
@@ -141,4 +136,5 @@ public class ThreadController : ControllerBase
         return Ok(threads);
     }
 }
+
 
