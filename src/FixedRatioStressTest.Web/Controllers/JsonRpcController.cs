@@ -62,7 +62,23 @@ public class JsonRpcController : ControllerBase
     private async Task<ActionResult<object>> CreatePool(JsonRpcRequest request)
     {
         _logger.LogInformation("RPC create_pool requested");
-        var parameters = ParsePoolCreationParams(request.Params);
+        PoolCreationParams parameters;
+        try
+        {
+            parameters = ParsePoolCreationParams(request.Params);
+        }
+        catch (ArgumentException ex)
+        {
+            return Ok(new JsonRpcResponse<object>
+            {
+                Error = new JsonRpcError
+                {
+                    Code = -32602,
+                    Message = ex.Message
+                },
+                Id = request.Id
+            });
+        }
         var realPool = await _solanaClient.CreateRealPoolAsync(parameters);
         var result = new PoolCreationResult
         {
@@ -210,6 +226,16 @@ public class JsonRpcController : ControllerBase
         {
             if (parameters is System.Text.Json.JsonElement element && element.ValueKind == System.Text.Json.JsonValueKind.Object)
             {
+                // Hard-reject legacy fields
+                if (element.TryGetProperty("ratio_whole_number", out _))
+                {
+                    throw new ArgumentException("'ratio_whole_number' has been removed. Use 'ratio' (e.g., '1:10' or '10:1').");
+                }
+                if (element.TryGetProperty("ratio_direction", out _))
+                {
+                    throw new ArgumentException("'ratio_direction' has been removed. Use 'ratio' (e.g., '1:10' or '10:1').");
+                }
+
                 if (element.TryGetProperty("token_a_decimals", out var tokenADecimalsElement))
                 {
                     result.TokenADecimals = tokenADecimalsElement.GetInt32();
@@ -218,18 +244,51 @@ public class JsonRpcController : ControllerBase
                 {
                     result.TokenBDecimals = tokenBDecimalsElement.GetInt32();
                 }
-                if (element.TryGetProperty("ratio_whole_number", out var ratioElement))
+                // New simple ratio support: "ratio": "1:10" or "10:1"
+                if (element.TryGetProperty("ratio", out var ratioElement) && ratioElement.ValueKind == System.Text.Json.JsonValueKind.String)
                 {
-                    result.RatioWholeNumber = ratioElement.GetUInt64();
+                    var ratioString = ratioElement.GetString() ?? string.Empty;
+                    ratioString = ratioString.Trim();
+                    // Basic validation and parsing
+                    var parts = ratioString.Split(':');
+                    if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[0]) || string.IsNullOrWhiteSpace(parts[1]))
+                    {
+                        throw new ArgumentException("Invalid ratio format. Expected '1:x' or 'x:1'.");
+                    }
+
+                    if (!ulong.TryParse(parts[0].Trim(), out var left) || !ulong.TryParse(parts[1].Trim(), out var right))
+                    {
+                        throw new ArgumentException("Invalid ratio numbers. Only whole numbers are allowed.");
+                    }
+
+                    if ((left == 1 && right >= 1) && !(right == 1))
+                    {
+                        // 1 : X  => anchor A to 1, X must be > 1
+                        result.RatioDirection = "a_to_b";
+                        result.RatioWholeNumber = right;
+                    }
+                    else if ((right == 1 && left >= 1) && !(left == 1))
+                    {
+                        // X : 1  => anchor B to 1, X must be > 1
+                        result.RatioDirection = "b_to_a";
+                        result.RatioWholeNumber = left;
+                    }
+                    else
+                    {
+                        throw new ArgumentException("Ratio must have exactly one side equal to 1 (e.g., '1:10' or '10:1').");
+                    }
                 }
-                if (element.TryGetProperty("ratio_direction", out var directionElement))
+                else
                 {
-                    result.RatioDirection = directionElement.GetString();
+                    // 'ratio' is required now
+                    throw new ArgumentException("'ratio' is required. Example: { \"token_a_decimals\": 9, \"token_b_decimals\": 9, \"ratio\": \"1:10\" }");
                 }
             }
         }
-        catch
+        catch (Exception)
         {
+            // Re-throw to allow caller to return proper JSON-RPC error
+            throw;
         }
         return result;
     }

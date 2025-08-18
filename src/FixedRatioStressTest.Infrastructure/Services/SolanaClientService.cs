@@ -822,12 +822,19 @@ public async Task CleanupInvalidPoolsAsync()
             
             var tokenAMint = await CreateTokenMintAsync(tokenADecimals, "TESTA");
             var tokenBMint = await CreateTokenMintAsync(tokenBDecimals, "TESTB");
-            
+
+            // Ensure proper token ordering (smaller pubkey is Token A), including decimals
+            if (string.Compare(tokenAMint.MintAddress, tokenBMint.MintAddress, StringComparison.Ordinal) > 0)
+            {
+                (tokenAMint, tokenBMint) = (tokenBMint, tokenAMint);
+                (tokenADecimals, tokenBDecimals) = (tokenBDecimals, tokenADecimals);
+            }
+
             // Step 3: Create normalized pool configuration
             var ratioWholeNumber = parameters.RatioWholeNumber ?? 1000;
             var ratioDirection = parameters.RatioDirection ?? "a_to_b";
-            
-            var (ratioANumerator, ratioBDenominator) = ratioDirection == "a_to_b" 
+
+            var (ratioANumerator, ratioBDenominator) = ratioDirection == "a_to_b"
                 ? ((ulong)Math.Pow(10, tokenADecimals), ratioWholeNumber * (ulong)Math.Pow(10, tokenBDecimals))
                 : (ratioWholeNumber * (ulong)Math.Pow(10, tokenADecimals), (ulong)Math.Pow(10, tokenBDecimals));
             
@@ -1051,7 +1058,39 @@ public async Task CleanupInvalidPoolsAsync()
             
             // Step 6: Save pool data
             await _storageService.SaveRealPoolAsync(realPool);
-            
+
+            // Step 7: Populate in-memory cache so JSON-RPC get_pool works for real pools
+            try
+            {
+                var cachedPoolState = new PoolState
+                {
+                    PoolId = realPool.PoolId,
+                    TokenAMint = realPool.TokenAMint,
+                    TokenBMint = realPool.TokenBMint,
+                    TokenADecimals = realPool.TokenADecimals,
+                    TokenBDecimals = realPool.TokenBDecimals,
+                    RatioANumerator = realPool.RatioANumerator,
+                    RatioBDenominator = realPool.RatioBDenominator,
+                    VaultA = DeriveTokenVaultPda(realPool.PoolId, realPool.TokenAMint),
+                    VaultB = DeriveTokenVaultPda(realPool.PoolId, realPool.TokenBMint),
+                    LpMintA = DeriveLpMintPda(realPool.PoolId, realPool.TokenAMint),
+                    LpMintB = DeriveLpMintPda(realPool.PoolId, realPool.TokenBMint),
+                    MainTreasury = DeriveMainTreasuryPda(),
+                    PoolTreasury = DerivePoolTreasuryPda(realPool.PoolId),
+                    PoolPaused = false,
+                    SwapsPaused = false,
+                    CreatedAt = realPool.CreatedAt,
+                    CreationSignature = realPool.CreationSignature
+                };
+
+                _poolCache[cachedPoolState.PoolId] = cachedPoolState;
+                _logger.LogDebug("💾 Cached real pool in memory for fast access: {PoolId}", cachedPoolState.PoolId);
+            }
+            catch (Exception cacheEx)
+            {
+                _logger.LogWarning(cacheEx, "Failed to cache real pool state in memory (continuing)");
+            }
+
             _logger.LogDebug("🎯 Real pool created: {PoolId}", realPool.PoolId);
             _logger.LogDebug("   Token A: {TokenA} ({Decimals} decimals)", realPool.TokenAMint, realPool.TokenADecimals);
             _logger.LogDebug("   Token B: {TokenB} ({Decimals} decimals)", realPool.TokenBMint, realPool.TokenBDecimals);
