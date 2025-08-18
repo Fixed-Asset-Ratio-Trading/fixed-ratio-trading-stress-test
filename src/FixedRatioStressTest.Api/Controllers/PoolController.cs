@@ -277,6 +277,7 @@ public class PoolController : ControllerBase
                 "get_pool" => await GetPoolById(request),
                 "core_wallet_status" => await GetCoreWalletStatus(request),
                 "airdrop_sol" => await AirdropSol(request),
+                "stop_service" => await StopService(request),
                 _ => BadRequest(new JsonRpcResponse<object>
                 {
                     Error = new JsonRpcError
@@ -403,6 +404,46 @@ public class PoolController : ControllerBase
         {
             _logger.LogError(ex, "RPC airdrop_sol failed");
             return Ok(new JsonRpcResponse<AirdropResult>
+            {
+                Error = new JsonRpcError
+                {
+                    Code = -1,
+                    Message = ex.Message
+                },
+                Id = request.Id
+            });
+        }
+    }
+
+    private async Task<ActionResult<JsonRpcResponse<StopServiceResult>>> StopService(JsonRpcRequest request)
+    {
+        try
+        {
+            _logger.LogInformation("RPC stop_service requested");
+            
+            // This endpoint doesn't actually stop the service
+            // It just returns an acknowledgement for testing purposes
+            
+            var result = new StopServiceResult
+            {
+                Message = "Stop service request acknowledged",
+                Status = "acknowledged",
+                Timestamp = DateTime.UtcNow,
+                ServiceState = "running"
+            };
+
+            _logger.LogInformation("RPC stop_service acknowledged (service not actually stopped)");
+
+            return Ok(new JsonRpcResponse<StopServiceResult>
+            {
+                Result = result,
+                Id = request.Id
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "RPC stop_service failed");
+            return Ok(new JsonRpcResponse<StopServiceResult>
             {
                 Error = new JsonRpcError
                 {
@@ -562,4 +603,12 @@ public class AirdropResult
 public class AirdropParams
 {
     public ulong Lamports { get; set; } = 1_000_000_000; // Default 1 SOL
+}
+
+public class StopServiceResult
+{
+    public string Message { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public DateTime Timestamp { get; set; }
+    public string ServiceState { get; set; } = string.Empty;
 }
