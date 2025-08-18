@@ -23,7 +23,7 @@ using System.Text.Json;
 internal static class Program
 {
 	[STAThread]
-	private static void Main()
+	private static void Main(string[] args)
 	{
 		Application.EnableVisualStyles();
 		Application.SetCompatibleTextRenderingDefault(false);
@@ -96,13 +96,17 @@ internal static class Program
 			sp.GetRequiredService<GuiLoggerProvider>(),
 			sp.GetRequiredService<ISolanaClientService>()));
 
+		// Parse CLI args
+		var autoStart = args.Any(a => string.Equals(a, "--start", StringComparison.OrdinalIgnoreCase));
+
 		// GUI host
 		services.AddSingleton<GuiServiceHost>(sp => new GuiServiceHost(
 			sp.GetRequiredService<IServiceLifecycle>(),
 			sp.GetRequiredService<GuiLoggerProvider>(),
 			sp.GetService<UdpLogListenerService>(),
 			sp.GetRequiredService<IConfiguration>(),
-			sp.GetRequiredService<InProcessApiHost>()));
+			sp.GetRequiredService<InProcessApiHost>(),
+			autoStart));
 
 		using var provider = services.BuildServiceProvider();
 		var host = provider.GetRequiredService<GuiServiceHost>();

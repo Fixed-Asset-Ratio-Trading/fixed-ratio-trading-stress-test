@@ -21,9 +21,11 @@ public sealed class GuiServiceHost : Form, IServiceHost
     private readonly UdpLogListenerService? _udpListener;
     private readonly IConfiguration _configuration;
     private readonly InProcessApiHost _apiHost;
+    private readonly bool _autoStartRequested;
     private bool _isShuttingDown;
     private bool _closeInitiated;
     private bool _stopScheduled;
+    private bool _exitAfterStop;
 
     // UI controls
     private Button _startButton = null!;
@@ -43,13 +45,14 @@ public sealed class GuiServiceHost : Form, IServiceHost
     public string HostType => "GUI";
 
     public GuiServiceHost(IServiceLifecycle engine, GuiLoggerProvider loggerProvider, 
-        UdpLogListenerService? udpListener, IConfiguration configuration, InProcessApiHost apiHost)
+        UdpLogListenerService? udpListener, IConfiguration configuration, InProcessApiHost apiHost, bool autoStartRequested)
     {
         _engine = engine;
         _loggerProvider = loggerProvider;
         _udpListener = udpListener;
         _configuration = configuration;
         _apiHost = apiHost;
+        _autoStartRequested = autoStartRequested;
 
         Text = _configuration.GetValue<string>("GuiSettings:WindowTitle", "Service Manager - Test Mode");
         StartPosition = FormStartPosition.CenterScreen;
@@ -57,6 +60,21 @@ public sealed class GuiServiceHost : Form, IServiceHost
 
         InitializeComponent();
         HookEvents();
+
+        if (_autoStartRequested)
+        {
+            Shown += (_, __) =>
+            {
+                Task.Run(async () =>
+                {
+                    await Task.Delay(1000);
+                    if (IsHandleCreated && !_isShuttingDown && _engine.State == ServiceState.Stopped)
+                    {
+                        BeginInvoke(new Action(() => _startButton.PerformClick()));
+                    }
+                });
+            };
+        }
     }
 
     public Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -247,6 +265,10 @@ public sealed class GuiServiceHost : Form, IServiceHost
             e.Message.IndexOf("RPC stop_service requested", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             _stopScheduled = true;
+            if (_autoStartRequested)
+            {
+                _exitAfterStop = true;
+            }
             Task.Run(async () =>
             {
                 await Task.Delay(3000); // Wait 3 seconds
@@ -364,6 +386,11 @@ public sealed class GuiServiceHost : Form, IServiceHost
             _stopButton.Enabled = false;
             await _apiHost.StopAsync();
             await _engine.StopAsync();
+            if (_exitAfterStop)
+            {
+                Close();
+                return;
+            }
         }
         catch (Exception ex)
         {
