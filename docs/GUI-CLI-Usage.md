@@ -35,6 +35,13 @@ Git Bash (invoke PowerShell for elevation, from repo root):
 powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Process -FilePath 'src/FixedRatioStressTest.Hosting.Gui/bin/Release/net8.0-windows/FixedRatioStressTest.Hosting.Gui.exe' -ArgumentList '--start' -Verb RunAs"
 ```
 
+Exact one-liner (works from any shell):
+```
+"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Process -FilePath 'C:\Users\Davinci\code\fixed-ratio-trading-stress-test\src\FixedRatioStressTest.Hosting.Gui\bin\Release\net8.0-windows\FixedRatioStressTest.Hosting.Gui.exe' -ArgumentList '--start' -Verb RunAs"
+```
+
+Note: This will display a Windows UAC elevation prompt; select Yes. This is expected and acceptable.
+
 Notes:
 - The in-process API listens on `http://localhost:8080` by default.
 - The GUI currently forces data and logs into the repo root `data/` and `logs/` folders. If your local repo root path differs from the hard-coded path in `Program.cs`, update it accordingly.
@@ -54,6 +61,19 @@ PowerShell:
 Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/jsonrpc `
   -ContentType 'application/json' `
   -Body '{"jsonrpc":"2.0","method":"stop_service","params":{},"id":1}'
+```
+
+Quick verification that the API is up (after starting the GUI):
+
+PowerShell:
+```
+$body = '{"jsonrpc":"2.0","method":"core_wallet_status","params":{},"id":"1"}'
+Invoke-RestMethod -Uri 'http://localhost:8080/api/jsonrpc' -Method Post -ContentType 'application/json' -Body $body
+```
+
+Git Bash:
+```
+/c/Windows/System32/curl.exe -s -X POST http://localhost:8080/api/jsonrpc -H "Content-Type: application/json" --data-raw '{"jsonrpc":"2.0","method":"core_wallet_status","params":{},"id":"1"}' | jq
 ```
 
 ### Calling other JSON-RPC methods (for feature testing)
