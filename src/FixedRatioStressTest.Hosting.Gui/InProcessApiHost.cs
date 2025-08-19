@@ -6,6 +6,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using FixedRatioStressTest.Common.Models;
 using FixedRatioStressTest.Core.Interfaces;
+using FixedRatioStressTest.Core.Services;
+using FixedRatioStressTest.Core;
+using FixedRatioStressTest.Infrastructure.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -61,6 +64,12 @@ public sealed class InProcessApiHost
 
 
 		builder.Services.AddSingleton<ISolanaClientService>(_solanaClientService);
+		// Register required services for controllers that depend on threading and storage
+		builder.Services.AddSingleton<IStorageService, JsonFileStorageService>();
+		builder.Services.AddSingleton<IComputeUnitManager, ComputeUnitManager>();
+		builder.Services.AddSingleton<IContractVersionService, RawRpcContractVersionService>();
+		builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
+		builder.Services.AddSingleton<IThreadManager, ThreadManager>();
 		builder.Services.AddRouting();
 		builder.Services.AddControllers().AddApplicationPart(Assembly.Load("FixedRatioStressTest.Web"));
 

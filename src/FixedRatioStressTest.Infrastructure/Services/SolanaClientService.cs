@@ -1236,10 +1236,51 @@ public async Task CleanupInvalidPoolsAsync()
                 _logger.LogDebug("Retrieved pool {PoolId} from cache", poolId);
                 return poolState;
             }
-            
+
+            // Fallback: hydrate from storage if present
+            try
+            {
+                var activePoolIds = await _storageService.LoadActivePoolIdsAsync();
+                if (activePoolIds.Contains(poolId))
+                {
+                    var realPools = await _storageService.LoadRealPoolsAsync();
+                    var rp = realPools.FirstOrDefault(p => p.PoolId == poolId);
+                    if (rp != null)
+                    {
+                        var hydrated = new PoolState
+                        {
+                            PoolId = rp.PoolId,
+                            TokenAMint = rp.TokenAMint,
+                            TokenBMint = rp.TokenBMint,
+                            TokenADecimals = rp.TokenADecimals,
+                            TokenBDecimals = rp.TokenBDecimals,
+                            RatioANumerator = rp.RatioANumerator,
+                            RatioBDenominator = rp.RatioBDenominator,
+                            VaultA = DeriveTokenAVaultPda(rp.PoolId),
+                            VaultB = DeriveTokenBVaultPda(rp.PoolId),
+                            LpMintA = DeriveLpTokenAMintPda(rp.PoolId),
+                            LpMintB = DeriveLpTokenBMintPda(rp.PoolId),
+                            MainTreasury = DeriveMainTreasuryPda(),
+                            PoolTreasury = DerivePoolTreasuryPda(rp.PoolId),
+                            PoolPaused = false,
+                            SwapsPaused = false,
+                            CreatedAt = rp.CreatedAt,
+                            CreationSignature = rp.CreationSignature
+                        };
+
+                        _poolCache[hydrated.PoolId] = hydrated;
+                        _logger.LogDebug("Hydrated pool {PoolId} from storage", poolId);
+                        return hydrated;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to hydrate pool {PoolId} from storage fallback", poolId);
+            }
+
             // TODO: In future phases, query blockchain for pool state
-            // For now, only support cached pools (created by this service instance)
-            throw new KeyNotFoundException($"Pool {poolId} not found in cache. Only pools created by this service instance are supported.");
+            throw new KeyNotFoundException($"Pool {poolId} not found");
         }
 
         public async Task<List<PoolState>> GetAllPoolsAsync()
