@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using System.IO;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Solnet.Rpc;
@@ -221,8 +223,16 @@ namespace FixedRatioStressTest.Infrastructure.Services
                         _logger.LogWarning("Transaction confirmation failed, but continuing...");
                     }
                     
-                    // Step 7: Derive pool state PDA from the created tokens
-                    poolStatePda = DerivePoolStatePda(poolConfig.TokenAMint, poolConfig.TokenBMint);
+                    // Step 7: Derive pool state PDA from the created tokens using unified seeds
+                    var (ordA1, ordB1) = GetOrderedTokens(poolConfig.TokenAMint, poolConfig.TokenBMint);
+                    var (bpA1, bpB1) = CalculateBasisPoints(
+                        poolConfig.TokenAMint,
+                        poolConfig.TokenBMint,
+                        poolConfig.TokenADecimals,
+                        poolConfig.TokenBDecimals,
+                        poolConfig.RatioWholeNumber,
+                        poolConfig.RatioDirection);
+                    poolStatePda = DerivePoolStatePda(ordA1, ordB1, bpA1, bpB1);
                     
                     _logger.LogDebug("✅ Successfully created REAL blockchain pool with signature {Signature}", poolCreationSignature);
                 }
@@ -232,7 +242,15 @@ namespace FixedRatioStressTest.Infrastructure.Services
                     
                     // Fallback: Create a simulated pool with deterministic ID for testing
                     poolCreationSignature = $"simulated_tx_{Guid.NewGuid():N}";
-                    poolStatePda = DerivePoolStatePda(poolConfig.TokenAMint, poolConfig.TokenBMint);
+                    var (ordA2, ordB2) = GetOrderedTokens(poolConfig.TokenAMint, poolConfig.TokenBMint);
+                    var (bpA2, bpB2) = CalculateBasisPoints(
+                        poolConfig.TokenAMint,
+                        poolConfig.TokenBMint,
+                        poolConfig.TokenADecimals,
+                        poolConfig.TokenBDecimals,
+                        poolConfig.RatioWholeNumber,
+                        poolConfig.RatioDirection);
+                    poolStatePda = DerivePoolStatePda(ordA2, ordB2, bpA2, bpB2);
                     
                     _logger.LogDebug("📋 Created SIMULATED pool for testing purposes");
                 }
@@ -248,10 +266,10 @@ namespace FixedRatioStressTest.Infrastructure.Services
                     TokenBDecimals = poolConfig.TokenBDecimals,
                     RatioANumerator = poolConfig.RatioANumerator,
                     RatioBDenominator = poolConfig.RatioBDenominator,
-                    VaultA = DeriveTokenVaultPda(poolStatePda, poolConfig.TokenAMint),
-                    VaultB = DeriveTokenVaultPda(poolStatePda, poolConfig.TokenBMint),
-                    LpMintA = DeriveLpMintPda(poolStatePda, poolConfig.TokenAMint),
-                    LpMintB = DeriveLpMintPda(poolStatePda, poolConfig.TokenBMint),
+                    VaultA = DeriveTokenAVaultPda(poolStatePda),
+                    VaultB = DeriveTokenBVaultPda(poolStatePda),
+                    LpMintA = DeriveLpTokenAMintPda(poolStatePda),
+                    LpMintB = DeriveLpTokenBMintPda(poolStatePda),
                     MainTreasury = DeriveMainTreasuryPda(),
                     PoolTreasury = DerivePoolTreasuryPda(poolStatePda),
                     PoolPaused = false,
@@ -286,6 +304,9 @@ public async Task<List<string>> GetOrCreateManagedPoolsAsync(int targetPoolCount
     try
     {
         _logger.LogDebug("🏊 Managing pool lifecycle - target: {TargetCount} pools", targetPoolCount);
+        
+        // Snapshot all on-chain program accounts for diagnostics
+        await SaveAllBlockchainPoolsSnapshotAsync();
         
         // Step 1: Load existing active pool IDs from storage
         var activePoolIds = await _storageService.LoadActivePoolIdsAsync();
@@ -375,15 +396,32 @@ public async Task<bool> ValidatePoolExistsAsync(string poolId)
 {
     try
     {
-        // Check if pool exists in our cache first
+        // 1) Fast path: known pool in memory
         if (_poolCache.ContainsKey(poolId))
         {
             return true;
         }
-        
-        // Try to fetch pool state to validate it exists
-        var poolState = await GetPoolStateAsync(poolId);
-        return poolState != null;
+
+        // 2) On-chain validation for externally created pools
+        var existsOnChain = await ValidatePoolExistsOnBlockchainAsync(poolId);
+        if (existsOnChain)
+        {
+            _logger.LogDebug("Pool {PoolId} validated via on-chain lookup (not yet cached)", poolId);
+            return true;
+        }
+
+        // 3) Legacy/local fetch as a last resort (may throw if unsupported)
+        try
+        {
+            var poolState = await GetPoolStateAsync(poolId);
+            return poolState != null;
+        }
+        catch (KeyNotFoundException)
+        {
+            // Expected if the pool was not created by this service instance
+        }
+
+        return false;
     }
     catch (Exception ex)
     {
@@ -397,6 +435,9 @@ public async Task CleanupInvalidPoolsAsync()
     try
     {
         _logger.LogDebug("🧹 Starting cleanup of invalid pools...");
+        
+        // Snapshot all on-chain program accounts for diagnostics
+        await SaveAllBlockchainPoolsSnapshotAsync();
         
         var activePoolIds = await _storageService.LoadActivePoolIdsAsync();
         var validPoolIds = new List<string>();
@@ -822,12 +863,19 @@ public async Task CleanupInvalidPoolsAsync()
             
             var tokenAMint = await CreateTokenMintAsync(tokenADecimals, "TESTA");
             var tokenBMint = await CreateTokenMintAsync(tokenBDecimals, "TESTB");
-            
+
+            // Ensure proper token ordering (smaller pubkey is Token A), including decimals
+            if (string.Compare(tokenAMint.MintAddress, tokenBMint.MintAddress, StringComparison.Ordinal) > 0)
+            {
+                (tokenAMint, tokenBMint) = (tokenBMint, tokenAMint);
+                (tokenADecimals, tokenBDecimals) = (tokenBDecimals, tokenADecimals);
+            }
+
             // Step 3: Create normalized pool configuration
             var ratioWholeNumber = parameters.RatioWholeNumber ?? 1000;
             var ratioDirection = parameters.RatioDirection ?? "a_to_b";
-            
-            var (ratioANumerator, ratioBDenominator) = ratioDirection == "a_to_b" 
+
+            var (ratioANumerator, ratioBDenominator) = ratioDirection == "a_to_b"
                 ? ((ulong)Math.Pow(10, tokenADecimals), ratioWholeNumber * (ulong)Math.Pow(10, tokenBDecimals))
                 : (ratioWholeNumber * (ulong)Math.Pow(10, tokenADecimals), (ulong)Math.Pow(10, tokenBDecimals));
             
@@ -1032,7 +1080,26 @@ public async Task CleanupInvalidPoolsAsync()
             }
             
             // Step 5: Create real pool data (tokens exist regardless of pool creation success)
-            var poolStatePda = DerivePoolStatePda(poolConfig.TokenAMint, poolConfig.TokenBMint);
+            // IMPORTANT: Derive pool PDA using the SAME seeds as the transaction builder
+            // - ordered token mints (lexicographic by raw bytes)
+            // - basis points derived from ratio and decimals
+            var (normalizedTokenA, normalizedTokenB) = GetOrderedTokens(
+                poolConfig.TokenAMint,
+                poolConfig.TokenBMint);
+
+            var (bpRatioA, bpRatioB) = CalculateBasisPoints(
+                poolConfig.TokenAMint,
+                poolConfig.TokenBMint,
+                poolConfig.TokenADecimals,
+                poolConfig.TokenBDecimals,
+                poolConfig.RatioWholeNumber,
+                poolConfig.RatioDirection);
+
+            var poolStatePda = DerivePoolStatePda(
+                normalizedTokenA,
+                normalizedTokenB,
+                bpRatioA,
+                bpRatioB);
             
             var realPool = new RealPoolData
             {
@@ -1049,9 +1116,56 @@ public async Task CleanupInvalidPoolsAsync()
                 IsValid = true
             };
             
+            // Safety check: verify the derived pool PDA exists on-chain before saving
+            try
+            {
+                var existsOnChain = await ValidatePoolExistsOnBlockchainAsync(realPool.PoolId);
+                realPool.IsValid = existsOnChain;
+                if (!existsOnChain)
+                {
+                    _logger.LogWarning("Pool PDA {PoolId} not found on-chain at save time; data will be saved but marked invalid.", realPool.PoolId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to validate pool {PoolId} on-chain during save", realPool.PoolId);
+            }
+
             // Step 6: Save pool data
             await _storageService.SaveRealPoolAsync(realPool);
-            
+
+            // Step 7: Populate in-memory cache so JSON-RPC get_pool works for real pools
+            try
+            {
+                var cachedPoolState = new PoolState
+                {
+                    PoolId = realPool.PoolId,
+                    TokenAMint = realPool.TokenAMint,
+                    TokenBMint = realPool.TokenBMint,
+                    TokenADecimals = realPool.TokenADecimals,
+                    TokenBDecimals = realPool.TokenBDecimals,
+                    RatioANumerator = realPool.RatioANumerator,
+                    RatioBDenominator = realPool.RatioBDenominator,
+                    VaultA = DeriveTokenAVaultPda(realPool.PoolId),
+                    VaultB = DeriveTokenBVaultPda(realPool.PoolId),
+                    LpMintA = DeriveLpTokenAMintPda(realPool.PoolId),
+                    LpMintB = DeriveLpTokenBMintPda(realPool.PoolId),
+                    MainTreasury = DeriveMainTreasuryPda(),
+                    PoolTreasury = DerivePoolTreasuryPda(realPool.PoolId),
+                    PoolPaused = false,
+                    SwapsPaused = false,
+                    CreatedAt = realPool.CreatedAt,
+                    CreationSignature = realPool.CreationSignature
+                };
+
+                _poolCache[cachedPoolState.PoolId] = cachedPoolState;
+                _logger.LogDebug("💾 Cached real pool in memory for fast access: {PoolId}", cachedPoolState.PoolId);
+            }
+            catch (Exception cacheEx)
+            {
+                _logger.LogWarning(cacheEx, "Failed to cache real pool state in memory (continuing)");
+            }
+
             _logger.LogDebug("🎯 Real pool created: {PoolId}", realPool.PoolId);
             _logger.LogDebug("   Token A: {TokenA} ({Decimals} decimals)", realPool.TokenAMint, realPool.TokenADecimals);
             _logger.LogDebug("   Token B: {TokenB} ({Decimals} decimals)", realPool.TokenBMint, realPool.TokenBDecimals);
@@ -1130,7 +1244,57 @@ public async Task CleanupInvalidPoolsAsync()
 
         public async Task<List<PoolState>> GetAllPoolsAsync()
         {
-            return _poolCache.Values.ToList();
+            // Start with any pools already cached
+            var poolIdToState = _poolCache.Values.ToDictionary(p => p.PoolId, p => p);
+
+            try
+            {
+                // Load active pool IDs and real pool metadata
+                var activePoolIds = await _storageService.LoadActivePoolIdsAsync();
+                var realPools = await _storageService.LoadRealPoolsAsync();
+
+                foreach (var poolId in activePoolIds)
+                {
+                    if (poolIdToState.ContainsKey(poolId)) continue;
+
+                    var rp = realPools.FirstOrDefault(p => p.PoolId == poolId);
+                    if (rp != null)
+                    {
+                        // Hydrate a minimal PoolState from stored real pool data
+                        var hydrated = new PoolState
+                        {
+                            PoolId = rp.PoolId,
+                            TokenAMint = rp.TokenAMint,
+                            TokenBMint = rp.TokenBMint,
+                            TokenADecimals = rp.TokenADecimals,
+                            TokenBDecimals = rp.TokenBDecimals,
+                            RatioANumerator = rp.RatioANumerator,
+                            RatioBDenominator = rp.RatioBDenominator,
+                            VaultA = DeriveTokenAVaultPda(rp.PoolId),
+                            VaultB = DeriveTokenBVaultPda(rp.PoolId),
+                            LpMintA = DeriveLpTokenAMintPda(rp.PoolId),
+                            LpMintB = DeriveLpTokenBMintPda(rp.PoolId),
+                            MainTreasury = DeriveMainTreasuryPda(),
+                            PoolTreasury = DerivePoolTreasuryPda(rp.PoolId),
+                            PoolPaused = false,
+                            SwapsPaused = false,
+                            CreatedAt = rp.CreatedAt,
+                            CreationSignature = rp.CreationSignature
+                        };
+
+                        poolIdToState[hydrated.PoolId] = hydrated;
+
+                        // Also cache for future fast access
+                        _poolCache[hydrated.PoolId] = hydrated;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to hydrate all pools from storage; returning cached pools only");
+            }
+
+            return poolIdToState.Values.ToList();
         }
 
         public async Task<List<string>> GetActivePoolsAsync()
@@ -1372,44 +1536,76 @@ public async Task CleanupInvalidPoolsAsync()
             throw new InvalidOperationException($"Failed to derive pool state PDA for poolId {poolId}");
         }
 
-        public string DeriveTokenVaultPda(string poolStatePda, string tokenMint)
+        public string DeriveTokenAVaultPda(string poolStatePda)
         {
             var seeds = new List<byte[]>
             {
-                Encoding.UTF8.GetBytes("token_a_vault"), // Will be either token_a_vault or token_b_vault based on token
+                Encoding.UTF8.GetBytes("token_a_vault"),
                 new PublicKey(poolStatePda).KeyBytes
             };
-            
             if (PublicKey.TryFindProgramAddress(
-                seeds, 
-                new PublicKey(_config.ProgramId), 
-                out var pda, 
+                seeds,
+                new PublicKey(_config.ProgramId),
+                out var pda,
                 out _))
             {
                 return pda.ToString();
             }
-            
-            throw new InvalidOperationException($"Failed to derive token vault PDA for pool {poolStatePda}, token {tokenMint}");
+            throw new InvalidOperationException($"Failed to derive token A vault PDA for pool {poolStatePda}");
         }
 
-        public string DeriveLpMintPda(string poolStatePda, string tokenMint)
+        public string DeriveTokenBVaultPda(string poolStatePda)
         {
             var seeds = new List<byte[]>
             {
-                Encoding.UTF8.GetBytes("lp_token_a_mint"), // Will be either lp_token_a_mint or lp_token_b_mint based on token
+                Encoding.UTF8.GetBytes("token_b_vault"),
                 new PublicKey(poolStatePda).KeyBytes
             };
-            
             if (PublicKey.TryFindProgramAddress(
-                seeds, 
-                new PublicKey(_config.ProgramId), 
-                out var pda, 
+                seeds,
+                new PublicKey(_config.ProgramId),
+                out var pda,
                 out _))
             {
                 return pda.ToString();
             }
-            
-            throw new InvalidOperationException($"Failed to derive LP mint PDA for pool {poolStatePda}, token {tokenMint}");
+            throw new InvalidOperationException($"Failed to derive token B vault PDA for pool {poolStatePda}");
+        }
+
+        public string DeriveLpTokenAMintPda(string poolStatePda)
+        {
+            var seeds = new List<byte[]>
+            {
+                Encoding.UTF8.GetBytes("lp_token_a_mint"),
+                new PublicKey(poolStatePda).KeyBytes
+            };
+            if (PublicKey.TryFindProgramAddress(
+                seeds,
+                new PublicKey(_config.ProgramId),
+                out var pda,
+                out _))
+            {
+                return pda.ToString();
+            }
+            throw new InvalidOperationException($"Failed to derive LP token A mint PDA for pool {poolStatePda}");
+        }
+
+        public string DeriveLpTokenBMintPda(string poolStatePda)
+        {
+            var seeds = new List<byte[]>
+            {
+                Encoding.UTF8.GetBytes("lp_token_b_mint"),
+                new PublicKey(poolStatePda).KeyBytes
+            };
+            if (PublicKey.TryFindProgramAddress(
+                seeds,
+                new PublicKey(_config.ProgramId),
+                out var pda,
+                out _))
+            {
+                return pda.ToString();
+            }
+            throw new InvalidOperationException($"Failed to derive LP token B mint PDA for pool {poolStatePda}");
         }
 
         public string DerivePoolTreasuryPda(string poolStatePda)
@@ -1589,26 +1785,61 @@ public async Task CleanupInvalidPoolsAsync()
             }
         }
         
-        // Enhanced PDA derivation using proper seeds
-        private string DerivePoolStatePda(string tokenAMint, string tokenBMint)
+        // PDA derivation using the SAME seeds as TransactionBuilderService
+        private string DerivePoolStatePda(string orderedTokenAMint, string orderedTokenBMint, ulong ratioANumerator, ulong ratioBDenominator)
         {
             var seeds = new List<byte[]>
             {
                 Encoding.UTF8.GetBytes("pool_state"),
-                new PublicKey(tokenAMint).KeyBytes,
-                new PublicKey(tokenBMint).KeyBytes
+                new PublicKey(orderedTokenAMint).KeyBytes,
+                new PublicKey(orderedTokenBMint).KeyBytes,
+                BitConverter.GetBytes(ratioANumerator),
+                BitConverter.GetBytes(ratioBDenominator)
             };
-            
             if (PublicKey.TryFindProgramAddress(
-                seeds, 
-                new PublicKey(_config.ProgramId), 
-                out var pda, 
+                seeds,
+                new PublicKey(_config.ProgramId),
+                out var pda,
                 out _))
             {
                 return pda.ToString();
             }
-            
-            throw new InvalidOperationException($"Failed to derive pool state PDA for tokens {tokenAMint}/{tokenBMint}");
+            throw new InvalidOperationException($"Failed to derive pool state PDA for tokens {orderedTokenAMint}/{orderedTokenBMint}");
+        }
+
+        // Helper: normalize token order like the dashboard / TransactionBuilderService
+        private (string tokenA, string tokenB) GetOrderedTokens(string tokenAMint, string tokenBMint)
+        {
+            var mintA = new PublicKey(tokenAMint);
+            var mintB = new PublicKey(tokenBMint);
+            var bytesA = mintA.KeyBytes;
+            var bytesB = mintB.KeyBytes;
+            bool aLessThanB = false;
+            for (int i = 0; i < 32; i++)
+            {
+                if (bytesA[i] < bytesB[i]) { aLessThanB = true; break; }
+                if (bytesA[i] > bytesB[i]) { aLessThanB = false; break; }
+            }
+            return aLessThanB ? (tokenAMint, tokenBMint) : (tokenBMint, tokenAMint);
+        }
+
+        // Helper: replicate basis-points calculation to match TransactionBuilderService
+        private (ulong ratioANumerator, ulong ratioBDenominator) CalculateBasisPoints(
+            string tokenAMint, string tokenBMint,
+            int tokenADecimals, int tokenBDecimals,
+            ulong ratioWholeNumber, string ratioDirection)
+        {
+            var (orderedTokenA, _) = GetOrderedTokens(tokenAMint, tokenBMint);
+            bool needsInversion = (orderedTokenA != tokenAMint);
+            if (ratioDirection == "b_to_a")
+            {
+                needsInversion = !needsInversion;
+            }
+            var orderedDecimalsA = needsInversion ? tokenBDecimals : tokenADecimals;
+            var orderedDecimalsB = needsInversion ? tokenADecimals : tokenBDecimals;
+            ulong ratioANumerator = (ulong)(1 * Math.Pow(10, orderedDecimalsA));
+            ulong ratioBDenominator = (ulong)(ratioWholeNumber * Math.Pow(10, orderedDecimalsB));
+            return (ratioANumerator, ratioBDenominator);
         }
 
         // System state
@@ -1696,14 +1927,29 @@ public async Task CleanupInvalidPoolsAsync()
                 
                 if (accountInfo.Result?.Value == null)
                 {
-                    _logger.LogDebug("Pool {PoolId} not found on blockchain", poolId);
+                    _logger.LogDebug("Pool {PoolId} not found via direct account lookup, enumerating program accounts...", poolId);
+                    var allPools = await FetchAllBlockchainPoolIdsAsync();
+                    var existsInList = allPools.Contains(poolId);
+                    if (existsInList)
+                    {
+                        _logger.LogDebug("Pool {PoolId} found in program-owned accounts list", poolId);
+                        return true;
+                    }
+                    _logger.LogDebug("Pool {PoolId} not present in program-owned accounts list", poolId);
                     return false;
                 }
                 
                 // Check if account has data (pool state should be initialized)
                 if (accountInfo.Result.Value.Data == null || accountInfo.Result.Value.Data.Count == 0)
                 {
-                    _logger.LogDebug("Pool {PoolId} exists but has no data", poolId);
+                    _logger.LogDebug("Pool {PoolId} exists but has no data; cross-checking program-owned accounts list", poolId);
+                    var allPools = await FetchAllBlockchainPoolIdsAsync();
+                    var existsInList = allPools.Contains(poolId);
+                    if (existsInList)
+                    {
+                        _logger.LogDebug("Pool {PoolId} confirmed via program-owned accounts list", poolId);
+                        return true;
+                    }
                     return false;
                 }
                 
@@ -1714,6 +1960,68 @@ public async Task CleanupInvalidPoolsAsync()
             {
                 _logger.LogWarning(ex, "Failed to validate pool {PoolId} on blockchain", poolId);
                 return false;
+            }
+        }
+
+        // Enumerate all accounts owned by the configured program and return their public keys
+        private async Task<List<string>> FetchAllBlockchainPoolIdsAsync()
+        {
+            try
+            {
+                var programId = _config.ProgramId;
+                if (string.IsNullOrWhiteSpace(programId))
+                {
+                    _logger.LogWarning("ProgramId is not configured; cannot enumerate program accounts");
+                    return new List<string>();
+                }
+
+                var result = await _rpcClient.GetProgramAccountsAsync(programId, Commitment.Processed, null, null);
+                if (!result.WasRequestSuccessfullyHandled || result.Result == null)
+                {
+                    _logger.LogWarning("GetProgramAccountsAsync failed or returned null. Reason: {Reason}", result.Reason);
+                    return new List<string>();
+                }
+
+                var ids = result.Result
+                    .Select(kv => kv.PublicKey)
+                    .Where(pk => !string.IsNullOrWhiteSpace(pk))
+                    .Distinct()
+                    .ToList();
+
+                _logger.LogDebug("Enumerated {Count} program-owned accounts for ProgramId {ProgramId}", ids.Count, programId);
+                return ids;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to fetch program-owned accounts");
+                return new List<string>();
+            }
+        }
+
+        // Save a snapshot of all program-owned accounts to data/allblockchainpools.json for diagnostics
+        private async Task SaveAllBlockchainPoolsSnapshotAsync()
+        {
+            try
+            {
+                var ids = await FetchAllBlockchainPoolIdsAsync();
+                var snapshot = new
+                {
+                    fetchedAt = DateTime.UtcNow,
+                    programId = _config.ProgramId,
+                    totalCount = ids.Count,
+                    pools = ids
+                };
+
+                var dataDir = Path.Combine(Environment.CurrentDirectory, "data");
+                Directory.CreateDirectory(dataDir);
+                var filePath = Path.Combine(dataDir, "allblockchainpools.json");
+                var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+                await File.WriteAllTextAsync(filePath, json);
+                _logger.LogDebug("Saved blockchain pools snapshot to {Path}", filePath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to save blockchain pools snapshot");
             }
         }
         

@@ -2,9 +2,8 @@ using System.Diagnostics;
 using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using FixedRatioStressTest.Abstractions;
 
-namespace FixedRatioStressTest.Api.Middleware
+namespace FixedRatioStressTest.Web.Middleware
 {
     public sealed class RequestLoggingMiddleware
     {

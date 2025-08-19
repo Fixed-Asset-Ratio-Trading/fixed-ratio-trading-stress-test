@@ -23,7 +23,7 @@ using System.Text.Json;
 internal static class Program
 {
 	[STAThread]
-	private static void Main()
+	private static void Main(string[] args)
 	{
 		Application.EnableVisualStyles();
 		Application.SetCompatibleTextRenderingDefault(false);
@@ -89,289 +89,36 @@ internal static class Program
 			sp.GetRequiredService<ILogger<StressTestEngine>>(),
 			sp.GetRequiredService<IConfiguration>()));
 
+		// In-process API host bound to GUI lifecycle
+		services.AddSingleton<InProcessApiHost>(sp => new InProcessApiHost(
+			sp.GetRequiredService<IConfiguration>(),
+			sp.GetRequiredService<ILoggerFactory>(),
+			sp.GetRequiredService<GuiLoggerProvider>(),
+			sp.GetRequiredService<ISolanaClientService>()));
+
+		// Parse CLI args
+		var autoStart = args.Any(a => string.Equals(a, "--start", StringComparison.OrdinalIgnoreCase));
+
 		// GUI host
 		services.AddSingleton<GuiServiceHost>(sp => new GuiServiceHost(
 			sp.GetRequiredService<IServiceLifecycle>(),
 			sp.GetRequiredService<GuiLoggerProvider>(),
 			sp.GetService<UdpLogListenerService>(),
-			sp.GetRequiredService<IConfiguration>()));
+			sp.GetRequiredService<IConfiguration>(),
+			sp.GetRequiredService<InProcessApiHost>(),
+			autoStart));
 
 		using var provider = services.BuildServiceProvider();
 		var host = provider.GetRequiredService<GuiServiceHost>();
 
-		// Start a lightweight HTTP API for testing in-process
-		StartInProcessApi(provider, bindAddress: "127.0.0.1", httpPort: configuration.GetValue<int>("NetworkConfiguration:HttpPort", 8080));
+		// In-process API now starts/stops with Start/Stop actions via InProcessApiHost
 
 		// Initialize subscriptions and run the form on the STA thread
 		host.InitializeAsync().GetAwaiter().GetResult();
 		Application.Run(host);
 	}
 
-	private static void StartInProcessApi(ServiceProvider provider, string bindAddress, int httpPort)
-	{
-		var config = provider.GetRequiredService<IConfiguration>();
-		var logger = provider.GetRequiredService<ILoggerFactory>().CreateLogger("GuiInProcApi");
-
-		var builder = WebApplication.CreateBuilder(new string[] { });
-
-		// Reuse GUI logging configuration
-		builder.Logging.ClearProviders();
-		builder.Logging.AddConfiguration(config.GetSection("Logging"));
-		builder.Logging.AddProvider(provider.GetRequiredService<GuiLoggerProvider>());
-
-		// Configure Kestrel directly
-		builder.WebHost.ConfigureKestrel(options =>
-		{
-			options.ListenAnyIP(httpPort);
-		});
-
-		builder.Services.AddSingleton(provider.GetRequiredService<ISolanaClientService>());
-		builder.Services.AddRouting();
-
-		var app = builder.Build();
-		var solana = provider.GetRequiredService<ISolanaClientService>();
-
-		var route = app.MapGroup("/api/pool");
-		route.MapGet("/list", async (HttpContext ctx) =>
-		{
-			logger.LogInformation("RPC list_pools requested (in-proc)");
-			var pools = await solana.GetAllPoolsAsync();
-			return Results.Ok(new
-			{
-				result = new
-				{
-					pools = pools.Select(p => new
-					{
-						poolId = p.PoolId,
-						tokenAMint = p.TokenAMint,
-						tokenBMint = p.TokenBMint,
-						tokenADecimals = p.TokenADecimals,
-						tokenBDecimals = p.TokenBDecimals,
-						ratioDisplay = p.RatioDisplay,
-						isBlockchainPool = p.IsBlockchainPool,
-						createdAt = p.CreatedAt
-					}).ToList(),
-					totalCount = pools.Count
-				}
-			});
-		});
-
-		route.MapPost("/create", async (HttpContext ctx) =>
-		{
-			var body = await new StreamReader(ctx.Request.Body).ReadToEndAsync();
-			logger.LogInformation("RPC create_pool requested (in-proc): {Body}", body);
-			var request = JsonSerializer.Deserialize<FixedRatioStressTest.Common.Models.JsonRpcRequest>(body);
-			var parameters = ParsePoolCreationParams(request?.Params);
-			var realPool = await solana.CreateRealPoolAsync(parameters);
-			return Results.Ok(new
-			{
-				result = new
-				{
-					poolId = realPool.PoolId,
-					tokenAMint = realPool.TokenAMint,
-					tokenBMint = realPool.TokenBMint,
-					tokenADecimals = realPool.TokenADecimals,
-					tokenBDecimals = realPool.TokenBDecimals,
-					ratioDisplay = realPool.RatioDisplay,
-					creationSignature = realPool.CreationSignature,
-					status = "created",
-					isBlockchainPool = true
-				}
-			});
-		});
-
-		// Minimal JSON-RPC endpoint to support scripts (core_wallet_status, list_pools)
-		app.MapPost("/api/jsonrpc", async (HttpContext ctx) =>
-		{
-			var body = await new StreamReader(ctx.Request.Body).ReadToEndAsync();
-			var request = JsonSerializer.Deserialize<FixedRatioStressTest.Common.Models.JsonRpcRequest>(body);
-			if (request == null || string.IsNullOrWhiteSpace(request.Method))
-			{
-				return Results.BadRequest(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
-				{
-					Error = new FixedRatioStressTest.Common.Models.JsonRpcError { Code = -32600, Message = "Invalid Request" },
-					Id = request?.Id
-				});
-			}
-
-			try
-			{
-				switch (request.Method)
-				{
-					case "core_wallet_status":
-					{
-						logger.LogInformation("RPC core_wallet_status requested (in-proc)");
-						var wallet = await solana.GetOrCreateCoreWalletAsync();
-						var result = new
-						{
-							publicKey = wallet.PublicKey,
-							currentSolBalanceLamports = wallet.CurrentSolBalance,
-							currentSolBalance = wallet.CurrentSolBalance / 1_000_000_000.0,
-							minimumSolBalanceLamports = wallet.MinimumSolBalance,
-							minimumSolBalance = wallet.MinimumSolBalance / 1_000_000_000.0,
-							createdAt = wallet.CreatedAt,
-							lastBalanceCheck = wallet.LastBalanceCheck
-						};
-						return Results.Ok(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
-						{
-							Result = result,
-							Id = request.Id
-						});
-					}
-					case "airdrop_sol":
-					{
-						logger.LogInformation("RPC airdrop_sol requested (in-proc)");
-						var wallet = await solana.GetOrCreateCoreWalletAsync();
-						
-						// Parse parameters
-						ulong lamports = 1_000_000_000; // Default 1 SOL
-						if (request.Params is System.Text.Json.JsonElement element && element.ValueKind == System.Text.Json.JsonValueKind.Object)
-						{
-							if (element.TryGetProperty("lamports", out var lamportsElement))
-							{
-								lamports = lamportsElement.GetUInt64();
-							}
-							else if (element.TryGetProperty("sol_amount", out var solElement))
-							{
-								lamports = (ulong)(solElement.GetDouble() * 1_000_000_000);
-							}
-						}
-						
-						var signature = await solana.RequestAirdropAsync(wallet.PublicKey, lamports);
-						var result = new
-						{
-							walletAddress = wallet.PublicKey,
-							lamports = lamports,
-							solAmount = lamports / 1_000_000_000.0,
-							signature = signature,
-							status = "success"
-						};
-						return Results.Ok(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
-						{
-							Result = result,
-							Id = request.Id
-						});
-					}
-					case "create_pool_random":
-					{
-						logger.LogInformation("RPC create_pool_random requested (in-proc)");
-						
-						// Generate random parameters
-						var random = new Random();
-						var parameters = new FixedRatioStressTest.Common.Models.PoolCreationParams
-						{
-							TokenADecimals = random.Next(6, 10), // 6-9 decimals
-							TokenBDecimals = random.Next(6, 10), // 6-9 decimals
-							RatioWholeNumber = (ulong)random.Next(100, 10000), // 100-9999 ratio
-							RatioDirection = random.Next(2) == 0 ? "a_to_b" : "b_to_a"
-						};
-						
-						var realPool = await solana.CreateRealPoolAsync(parameters);
-						var result = new
-						{
-							poolId = realPool.PoolId,
-							tokenAMint = realPool.TokenAMint,
-							tokenBMint = realPool.TokenBMint,
-							tokenADecimals = realPool.TokenADecimals,
-							tokenBDecimals = realPool.TokenBDecimals,
-							ratioDisplay = realPool.RatioDisplay,
-							creationSignature = realPool.CreationSignature,
-							status = "created",
-							isBlockchainPool = true
-						};
-						return Results.Ok(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
-						{
-							Result = result,
-							Id = request.Id
-						});
-					}
-					case "list_pools":
-					{
-						logger.LogInformation("RPC list_pools requested (in-proc JSON-RPC)");
-						var pools = await solana.GetAllPoolsAsync();
-						var result = new
-						{
-							pools = pools.Select(p => new
-							{
-								poolId = p.PoolId,
-								tokenAMint = p.TokenAMint,
-								tokenBMint = p.TokenBMint,
-								tokenADecimals = p.TokenADecimals,
-								tokenBDecimals = p.TokenBDecimals,
-								ratioDisplay = p.RatioDisplay,
-								isBlockchainPool = p.IsBlockchainPool,
-								createdAt = p.CreatedAt
-							}).ToList(),
-							totalCount = pools.Count
-						};
-						return Results.Ok(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
-						{
-							Result = result,
-							Id = request.Id
-						});
-					}
-					default:
-						return Results.BadRequest(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
-						{
-							Error = new FixedRatioStressTest.Common.Models.JsonRpcError
-							{
-								Code = -32601,
-								Message = $"Method {request.Method} not found"
-							},
-							Id = request.Id
-						});
-				}
-			}
-			catch (Exception ex)
-			{
-				logger.LogError(ex, "Error handling JSON-RPC request {Method}", request.Method);
-				return Results.Ok(new FixedRatioStressTest.Common.Models.JsonRpcResponse<object>
-				{
-					Error = new FixedRatioStressTest.Common.Models.JsonRpcError
-					{
-						Code = -32603,
-						Message = "Internal error"
-					},
-					Id = request.Id
-				});
-			}
-		});
-
-		app.RunAsync();
-	}
-
-	private static PoolCreationParams ParsePoolCreationParams(object? parameters)
-	{
-		var result = new PoolCreationParams();
-		if (parameters == null) return result;
-		try
-		{
-			if (parameters is System.Text.Json.JsonElement element && element.ValueKind == System.Text.Json.JsonValueKind.Object)
-			{
-				if (element.TryGetProperty("token_a_decimals", out var tokenADecimalsElement))
-				{
-					result.TokenADecimals = tokenADecimalsElement.GetInt32();
-				}
-				if (element.TryGetProperty("token_b_decimals", out var tokenBDecimalsElement))
-				{
-					result.TokenBDecimals = tokenBDecimalsElement.GetInt32();
-				}
-				if (element.TryGetProperty("ratio_whole_number", out var ratioElement))
-				{
-					result.RatioWholeNumber = ratioElement.GetUInt64();
-				}
-				if (element.TryGetProperty("ratio_direction", out var directionElement))
-				{
-					result.RatioDirection = directionElement.GetString();
-				}
-			}
-		}
-		catch
-		{
-			// ignore and keep defaults
-		}
-		return result;
-	}
+    // In-proc API bootstrap removed; managed by InProcessApiHost
 }
 
 // No legacy adapters; GUI subscribes to GuiLoggerProvider events

@@ -96,8 +96,10 @@ public interface ISolanaClientService
     
     // PDA derivation
     string DerivePoolStatePda(string poolId);
-    string DeriveTokenVaultPda(string poolId, string tokenMint);
-    string DeriveLpMintPda(string poolId, string tokenMint);
+    string DeriveTokenAVaultPda(string poolId);
+    string DeriveTokenBVaultPda(string poolId);
+    string DeriveLpTokenAMintPda(string poolId);
+    string DeriveLpTokenBMintPda(string poolId);
     string DerivePoolTreasuryPda(string poolId);
     
     // System state

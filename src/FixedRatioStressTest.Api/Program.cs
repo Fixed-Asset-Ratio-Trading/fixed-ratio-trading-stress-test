@@ -4,13 +4,14 @@ using FixedRatioStressTest.Core.Interfaces;
 using FixedRatioStressTest.Core.Services;
 using FixedRatioStressTest.Core.Threading;
 using FixedRatioStressTest.Infrastructure.Services;
-using FixedRatioStressTest.Api.Services;
+using FixedRatioStressTest.Web.Services;
 using FixedRatioStressTest.Logging;
 using FixedRatioStressTest.Logging.WindowsService;
 using FixedRatioStressTest.Logging.Transport;
 using Microsoft.AspNetCore.ResponseCompression;
 using System.IO.Compression;
-using FixedRatioStressTest.Api.Middleware;
+using FixedRatioStressTest.Web.Middleware;
+using System.Reflection;
 
 // Apply Windows performance optimizations for 32-core Threadripper
 if (OperatingSystem.IsWindows())
@@ -54,7 +55,8 @@ builder.WebHost.ConfigureKestrel(options =>
 });
 
 // Add services to the container.
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddApplicationPart(Assembly.Load("FixedRatioStressTest.Web"));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 

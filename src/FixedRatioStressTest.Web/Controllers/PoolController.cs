@@ -2,8 +2,9 @@ using FixedRatioStressTest.Common.Models;
 using FixedRatioStressTest.Abstractions;
 using FixedRatioStressTest.Core.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
-namespace FixedRatioStressTest.Api.Controllers;
+namespace FixedRatioStressTest.Web.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
@@ -18,9 +19,6 @@ public class PoolController : ControllerBase
         _logger = logger;
     }
 
-    /// <summary>
-    /// Simulates pool creation to validate transaction format before execution
-    /// </summary>
     [HttpPost("simulate")]
     public async Task<ActionResult<JsonRpcResponse<TransactionSimulationResult>>> SimulatePoolCreation([FromBody] JsonRpcRequest request)
     {
@@ -48,10 +46,6 @@ public class PoolController : ControllerBase
         }
     }
 
-    /// <summary>
-    /// Creates a new pool on the blockchain as specified in the design documents
-    /// This includes simulation validation before actual creation
-    /// </summary>
     [HttpPost("create")]
     public async Task<ActionResult<JsonRpcResponse<PoolCreationResult>>> CreatePool([FromBody] JsonRpcRequest request)
     {
@@ -59,11 +53,7 @@ public class PoolController : ControllerBase
         {
             _logger.LogInformation("RPC create_pool requested: {Method}", request.Method);
             
-            // Parse parameters from JSON-RPC request
             var parameters = ParsePoolCreationParams(request.Params);
-            
-            // Create REAL pool on blockchain using core wallet
-            // This will: 1) Create/load core wallet, 2) Check SOL balance, 3) Attempt airdrop if needed, 4) Create pool
             var realPool = await _solanaClient.CreateRealPoolAsync(parameters);
             
             var result = new PoolCreationResult
@@ -76,7 +66,7 @@ public class PoolController : ControllerBase
                 RatioDisplay = realPool.RatioDisplay,
                 CreationSignature = realPool.CreationSignature,
                 Status = "created",
-                IsBlockchainPool = true // Always true for real pools
+                IsBlockchainPool = true
             };
 
             _logger.LogInformation("RPC create_pool completed: PoolId={PoolId}", result.PoolId);
@@ -102,9 +92,6 @@ public class PoolController : ControllerBase
         }
     }
 
-    /// <summary>
-    /// Creates a new pool with random parameters
-    /// </summary>
     [HttpPost("create_random")]
     public async Task<ActionResult<JsonRpcResponse<PoolCreationResult>>> CreatePoolRandom([FromBody] JsonRpcRequest request)
     {
@@ -112,20 +99,15 @@ public class PoolController : ControllerBase
         {
             _logger.LogInformation("RPC create_pool_random requested");
             
-            // Generate random parameters
             var random = new Random();
             var parameters = new PoolCreationParams
             {
-                TokenADecimals = random.Next(6, 10), // 6-9 decimals
-                TokenBDecimals = random.Next(6, 10), // 6-9 decimals
-                RatioWholeNumber = (ulong)random.Next(100, 10000), // 100-9999 ratio
+                TokenADecimals = random.Next(6, 10),
+                TokenBDecimals = random.Next(6, 10),
+                RatioWholeNumber = (ulong)random.Next(100, 10000),
                 RatioDirection = random.Next(2) == 0 ? "a_to_b" : "b_to_a"
             };
             
-            _logger.LogInformation("Generated random parameters: TokenA={TokenADecimals} decimals, TokenB={TokenBDecimals} decimals, Ratio={RatioWholeNumber} {Direction}",
-                parameters.TokenADecimals, parameters.TokenBDecimals, parameters.RatioWholeNumber, parameters.RatioDirection);
-            
-            // Create REAL pool on blockchain using core wallet
             var realPool = await _solanaClient.CreateRealPoolAsync(parameters);
             
             var result = new PoolCreationResult
@@ -138,7 +120,7 @@ public class PoolController : ControllerBase
                 RatioDisplay = realPool.RatioDisplay,
                 CreationSignature = realPool.CreationSignature,
                 Status = "created",
-                IsBlockchainPool = true // Always true for real pools
+                IsBlockchainPool = true
             };
 
             _logger.LogInformation("RPC create_pool_random completed: PoolId={PoolId}", result.PoolId);
@@ -164,9 +146,6 @@ public class PoolController : ControllerBase
         }
     }
 
-    /// <summary>
-    /// Lists all available pools
-    /// </summary>
     [HttpGet("list")]
     public async Task<ActionResult<JsonRpcResponse<PoolListResult>>> ListPools()
     {
@@ -214,9 +193,6 @@ public class PoolController : ControllerBase
         }
     }
 
-    /// <summary>
-    /// Gets detailed information about a specific pool
-    /// </summary>
     [HttpGet("{poolId}")]
     public async Task<ActionResult<JsonRpcResponse<PoolState>>> GetPool(string poolId)
     {
@@ -260,52 +236,10 @@ public class PoolController : ControllerBase
         }
     }
 
-    /// <summary>
-    /// JSON-RPC endpoint for pool creation (matches design document API)
-    /// </summary>
-    [HttpPost("/api/jsonrpc")]
-    public async Task<ActionResult<object>> JsonRpcEndpoint([FromBody] JsonRpcRequest request)
-    {
-        try
-        {
-            _logger.LogInformation("JSON-RPC request received via /api/jsonrpc: {Method}", request.Method);
-            return request.Method switch
-            {
-                "create_pool" => await CreatePool(request),
-                "create_pool_random" => await CreatePoolRandom(request),
-                "list_pools" => await ListPools(),
-                "get_pool" => await GetPoolById(request),
-                "core_wallet_status" => await GetCoreWalletStatus(request),
-                "airdrop_sol" => await AirdropSol(request),
-                _ => BadRequest(new JsonRpcResponse<object>
-                {
-                    Error = new JsonRpcError
-                    {
-                        Code = -32601,
-                        Message = $"Method {request.Method} not found"
-                    },
-                    Id = request.Id
-                })
-            };
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "RPC endpoint error");
-            return Ok(new JsonRpcResponse<object>
-            {
-                Error = new JsonRpcError
-                {
-                    Code = -32603,
-                    Message = "Internal error"
-                },
-                Id = request.Id
-            });
-        }
-    }
+    // JSON-RPC moved to JsonRpcController to avoid route conflicts
 
     private async Task<ActionResult<JsonRpcResponse<PoolState>>> GetPoolById(JsonRpcRequest request)
     {
-        // Extract pool ID from params
         var poolId = ExtractPoolIdFromParams(request.Params);
         if (string.IsNullOrEmpty(poolId))
         {
@@ -371,14 +305,10 @@ public class PoolController : ControllerBase
         {
             _logger.LogInformation("RPC airdrop_sol requested");
             
-            // Parse parameters
             var parameters = ParseAirdropParams(request.Params);
             var lamports = parameters.Lamports;
             
-            // Get core wallet
             var wallet = await _solanaClient.GetOrCreateCoreWalletAsync();
-            
-            // Request airdrop
             var signature = await _solanaClient.RequestAirdropAsync(wallet.PublicKey, lamports);
             
             var result = new AirdropResult
@@ -403,6 +333,43 @@ public class PoolController : ControllerBase
         {
             _logger.LogError(ex, "RPC airdrop_sol failed");
             return Ok(new JsonRpcResponse<AirdropResult>
+            {
+                Error = new JsonRpcError
+                {
+                    Code = -1,
+                    Message = ex.Message
+                },
+                Id = request.Id
+            });
+        }
+    }
+
+    private async Task<ActionResult<JsonRpcResponse<StopServiceResult>>> StopService(JsonRpcRequest request)
+    {
+        try
+        {
+            _logger.LogInformation("RPC stop_service requested");
+            
+            var result = new StopServiceResult
+            {
+                Message = "Stop service request acknowledged",
+                Status = "acknowledged",
+                Timestamp = DateTime.UtcNow,
+                ServiceState = "running"
+            };
+
+            _logger.LogInformation("RPC stop_service acknowledged (service not actually stopped)");
+
+            return Ok(new JsonRpcResponse<StopServiceResult>
+            {
+                Result = result,
+                Id = request.Id
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "RPC stop_service failed");
+            return Ok(new JsonRpcResponse<StopServiceResult>
             {
                 Error = new JsonRpcError
                 {
@@ -507,7 +474,6 @@ public class PoolController : ControllerBase
     }
 }
 
-// Response models for pool API
 public class PoolCreationResult
 {
     public string PoolId { get; set; } = string.Empty;
@@ -561,5 +527,15 @@ public class AirdropResult
 
 public class AirdropParams
 {
-    public ulong Lamports { get; set; } = 1_000_000_000; // Default 1 SOL
+    public ulong Lamports { get; set; } = 1_000_000_000;
 }
+
+public class StopServiceResult
+{
+    public string Message { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public DateTime Timestamp { get; set; }
+    public string ServiceState { get; set; } = string.Empty;
+}
+
+
