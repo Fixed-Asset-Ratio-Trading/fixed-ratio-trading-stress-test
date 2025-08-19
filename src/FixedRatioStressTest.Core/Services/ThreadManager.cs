@@ -47,7 +47,16 @@ public class ThreadManager : IThreadManager
             throw new InvalidOperationException($"Pool {config.PoolId} does not exist. Cannot create thread without a valid pool.");
         }
 
-        config.ThreadId = $"{config.ThreadType.ToString().ToLower()}_{Guid.NewGuid():N}";
+        // Generate short ID: <type>-<8chars> (<= 12 chars total requirement)
+        var shortSuffix = Guid.NewGuid().ToString("N").Substring(0, 8);
+        var typePrefix = config.ThreadType switch
+        {
+            ThreadType.Deposit => "dep",
+            ThreadType.Withdrawal => "wd",
+            ThreadType.Swap => "sw",
+            _ => "th"
+        };
+        config.ThreadId = $"{typePrefix}-{shortSuffix}";
         config.CreatedAt = DateTime.UtcNow;
         config.Status = ThreadStatus.Created;
 
@@ -127,6 +136,26 @@ public class ThreadManager : IThreadManager
         await _storageService.SaveThreadConfigAsync(threadId, config);
 
         _logger.LogDebug("Stopped thread {ThreadId}", threadId);
+    }
+
+    public async Task<int> StopAllThreadsForPoolAsync(string poolId, bool includeSwaps = false)
+    {
+        var all = await _storageService.LoadAllThreadsAsync();
+        var toStop = all.Where(t => t.PoolId == poolId && (includeSwaps || t.ThreadType != ThreadType.Swap)).ToList();
+        int stopped = 0;
+        foreach (var t in toStop)
+        {
+            try
+            {
+                await StopThreadAsync(t.ThreadId);
+                stopped++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to stop thread {ThreadId} for pool {PoolId}", t.ThreadId, poolId);
+            }
+        }
+        return stopped;
     }
 
     public async Task DeleteThreadAsync(string threadId)
@@ -273,21 +302,22 @@ public class ThreadManager : IThreadManager
     {
         try
         {
-            // Phase 3: Implement withdrawal logic
+            // Real withdrawal logic - check actual LP token balance
             _logger.LogDebug("Executing withdrawal operation for thread {ThreadId}", config.ThreadId);
 
-            // TODO: Check LP token balance
-            // For now, simulate checking if we have LP tokens to withdraw
-            var hasLpTokens = random.Next(1, 100) > 30; // 70% chance of having LP tokens
-            
-            if (!hasLpTokens)
+            var pool = await _solanaClient.GetPoolStateAsync(config.PoolId);
+            var lpMint = config.TokenType == TokenType.A ? pool.LpMintA : pool.LpMintB;
+            var lpBalance = await _solanaClient.GetTokenBalanceAsync(wallet.Account.PublicKey.Key, lpMint);
+            if (lpBalance == 0)
             {
                 _logger.LogDebug("No LP tokens available for withdrawal in thread {ThreadId}, waiting...", config.ThreadId);
                 return ("withdrawal_waiting", false, 0);
             }
 
-            // Calculate withdrawal amount (mock for now)
-            var lpTokenAmount = (ulong)random.Next(1000, 10000);
+            // Withdraw between 1 basis point and 5% of current LP balance
+            ulong maxPortion = (ulong)Math.Max(1001, (long)(lpBalance * 5 / 100));
+            var upper = (int)Math.Min(int.MaxValue, maxPortion);
+            var lpTokenAmount = (ulong)random.Next(1000, Math.Max(1001, upper));
             
             // Submit withdrawal transaction
             var result = await _solanaClient.ExecuteWithdrawalAsync(

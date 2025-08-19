@@ -55,7 +55,8 @@ public sealed class GuiServiceHost : Form, IServiceHost
         _autoStartRequested = autoStartRequested;
 
         Text = _configuration.GetValue<string>("GuiSettings:WindowTitle", "Service Manager - Test Mode");
-        StartPosition = FormStartPosition.CenterScreen;
+        StartPosition = FormStartPosition.Manual;
+        Location = new Point(0, 0);
         MinimumSize = new Size(900, 650);
 
         InitializeComponent();

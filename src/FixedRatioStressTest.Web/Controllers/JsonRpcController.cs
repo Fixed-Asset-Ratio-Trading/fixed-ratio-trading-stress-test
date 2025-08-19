@@ -10,11 +10,13 @@ namespace FixedRatioStressTest.Web.Controllers;
 public class JsonRpcController : ControllerBase
 {
     private readonly ISolanaClientService _solanaClient;
+    private readonly IThreadManager _threadManager;
     private readonly ILogger<JsonRpcController> _logger;
 
-    public JsonRpcController(ISolanaClientService solanaClient, ILogger<JsonRpcController> logger)
+    public JsonRpcController(ISolanaClientService solanaClient, IThreadManager threadManager, ILogger<JsonRpcController> logger)
     {
         _solanaClient = solanaClient;
+        _threadManager = threadManager;
         _logger = logger;
     }
 
@@ -30,6 +32,15 @@ public class JsonRpcController : ControllerBase
                 "create_pool_random" => await CreatePoolRandom(request),
                 "list_pools" => await ListPools(request),
                 "get_pool" => await GetPoolById(request),
+                // Thread management
+                "create_deposit_thread" => await CreateDepositThread(request),
+                "create_withdrawal_thread" => await CreateWithdrawalThread(request),
+                "start_thread" => await StartThreadById(request),
+                "stop_thread" => await StopThreadById(request),
+                "delete_thread" => await DeleteThreadById(request),
+                "get_thread" => await GetThreadById(request),
+                "list_threads" => await ListThreads(request),
+                "stop_all_pool_threads" => await StopAllPoolThreads(request),
                 "core_wallet_status" => await GetCoreWalletStatus(request),
                 "airdrop_sol" => await AirdropSol(request),
                 "stop_service" => await StopService(request),
@@ -57,6 +68,157 @@ public class JsonRpcController : ControllerBase
                 Id = request.Id
             });
         }
+    }
+
+    private async Task<ActionResult<object>> CreateDepositThread(JsonRpcRequest request)
+    {
+        try
+        {
+            if (request.Params is System.Text.Json.JsonElement el && el.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                var poolId = el.TryGetProperty("pool_id", out var poolEl) ? poolEl.GetString() ?? string.Empty : string.Empty;
+                var tokenTypeStr = el.TryGetProperty("token_type", out var tokenEl) ? tokenEl.GetString() ?? "A" : "A";
+                var initialAmount = el.TryGetProperty("initial_amount", out var amountEl) && amountEl.TryGetUInt64(out var amt) ? amt : 0UL;
+                var autoRefill = el.TryGetProperty("auto_refill", out var arEl) && arEl.ValueKind == System.Text.Json.JsonValueKind.True;
+                var shareLpTokens = !el.TryGetProperty("share_lp_tokens", out var shareEl) || (shareEl.ValueKind == System.Text.Json.JsonValueKind.True);
+            if (string.IsNullOrWhiteSpace(poolId))
+            {
+                return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "pool_id is required" }, Id = request.Id });
+            }
+            var tokenType = string.Equals(tokenTypeStr, "B", StringComparison.OrdinalIgnoreCase) ? TokenType.B : TokenType.A;
+
+            var config = new ThreadConfig
+            {
+                ThreadType = ThreadType.Deposit,
+                PoolId = poolId,
+                TokenType = tokenType,
+                InitialAmount = initialAmount,
+                AutoRefill = autoRefill,
+                ShareTokens = shareLpTokens
+            };
+            var threadId = await _threadManager.CreateThreadAsync(config);
+            return Ok(new JsonRpcResponse<object> { Result = new { threadId, status = "created" }, Id = request.Id });
+            }
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "Invalid params" }, Id = request.Id });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "create_deposit_thread failed");
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32603, Message = ex.Message }, Id = request.Id });
+        }
+    }
+
+    private async Task<ActionResult<object>> CreateWithdrawalThread(JsonRpcRequest request)
+    {
+        try
+        {
+            if (request.Params is System.Text.Json.JsonElement el && el.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                var poolId = el.TryGetProperty("pool_id", out var poolEl) ? poolEl.GetString() ?? string.Empty : string.Empty;
+                var tokenTypeStr = el.TryGetProperty("token_type", out var tokenEl) ? tokenEl.GetString() ?? "A" : "A";
+            if (string.IsNullOrWhiteSpace(poolId))
+            {
+                return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "pool_id is required" }, Id = request.Id });
+            }
+            var tokenType = string.Equals(tokenTypeStr, "B", StringComparison.OrdinalIgnoreCase) ? TokenType.B : TokenType.A;
+            var config = new ThreadConfig
+            {
+                ThreadType = ThreadType.Withdrawal,
+                PoolId = poolId,
+                TokenType = tokenType,
+                InitialAmount = 0,
+                AutoRefill = false,
+                ShareTokens = false
+            };
+            var threadId = await _threadManager.CreateThreadAsync(config);
+            return Ok(new JsonRpcResponse<object> { Result = new { threadId, status = "created" }, Id = request.Id });
+            }
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "Invalid params" }, Id = request.Id });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "create_withdrawal_thread failed");
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32603, Message = ex.Message }, Id = request.Id });
+        }
+    }
+
+    private async Task<ActionResult<object>> StartThreadById(JsonRpcRequest request)
+    {
+        var id = ExtractThreadId(request.Params);
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "thread_id is required" }, Id = request.Id });
+        }
+        await _threadManager.StartThreadAsync(id);
+        return Ok(new JsonRpcResponse<object> { Result = new { threadId = id, status = "started" }, Id = request.Id });
+    }
+
+    private async Task<ActionResult<object>> StopThreadById(JsonRpcRequest request)
+    {
+        var id = ExtractThreadId(request.Params);
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "thread_id is required" }, Id = request.Id });
+        }
+        await _threadManager.StopThreadAsync(id);
+        return Ok(new JsonRpcResponse<object> { Result = new { threadId = id, status = "stopped" }, Id = request.Id });
+    }
+
+    private async Task<ActionResult<object>> DeleteThreadById(JsonRpcRequest request)
+    {
+        var id = ExtractThreadId(request.Params);
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "thread_id is required" }, Id = request.Id });
+        }
+        await _threadManager.DeleteThreadAsync(id);
+        return Ok(new JsonRpcResponse<object> { Result = new { threadId = id, status = "deleted" }, Id = request.Id });
+    }
+
+    private async Task<ActionResult<object>> GetThreadById(JsonRpcRequest request)
+    {
+        var id = ExtractThreadId(request.Params);
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "thread_id is required" }, Id = request.Id });
+        }
+        var cfg = await _threadManager.GetThreadConfigAsync(id);
+        var stats = await _threadManager.GetThreadStatisticsAsync(id);
+        return Ok(new JsonRpcResponse<object> { Result = new { config = cfg, statistics = stats }, Id = request.Id });
+    }
+
+    private async Task<ActionResult<object>> ListThreads(JsonRpcRequest request)
+    {
+        var list = await _threadManager.GetAllThreadsAsync();
+        return Ok(new JsonRpcResponse<object> { Result = new { threads = list }, Id = request.Id });
+    }
+
+    private async Task<ActionResult<object>> StopAllPoolThreads(JsonRpcRequest request)
+    {
+        if (request.Params is System.Text.Json.JsonElement el && el.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            var poolId = el.TryGetProperty("pool_id", out var poolEl) ? poolEl.GetString() ?? string.Empty : string.Empty;
+            var includeSwaps = el.TryGetProperty("include_swaps", out var incEl) && incEl.ValueKind == System.Text.Json.JsonValueKind.True;
+            if (string.IsNullOrWhiteSpace(poolId))
+            {
+                return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "pool_id is required" }, Id = request.Id });
+            }
+            var count = await _threadManager.StopAllThreadsForPoolAsync(poolId, includeSwaps);
+            return Ok(new JsonRpcResponse<object> { Result = new { poolId, stopped = count }, Id = request.Id });
+        }
+        return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "Invalid params" }, Id = request.Id });
+    }
+
+    private static string ExtractThreadId(object? parameters)
+    {
+        if (parameters is System.Text.Json.JsonElement el && el.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            if (el.TryGetProperty("thread_id", out var idEl))
+            {
+                return idEl.GetString() ?? string.Empty;
+            }
+        }
+        return string.Empty;
     }
 
     private async Task<ActionResult<object>> CreatePool(JsonRpcRequest request)
