@@ -278,6 +278,10 @@ public class ThreadManager : IThreadManager
             var pool = await _solanaClient.GetPoolStateAsync(config.PoolId);
             var tokenMint = config.TokenType == TokenType.A ? pool.TokenAMint : pool.TokenBMint;
 
+            // Ensure ATA exists before minting
+            await _solanaClient.EnsureAtaExistsAsync(wallet, tokenMint);
+            _logger.LogDebug("Ensured ATA exists for thread {ThreadId} and mint {TokenMint}", config.ThreadId, tokenMint);
+
             // Mint initial tokens to the thread's wallet
             await _solanaClient.MintTokensAsync(tokenMint, wallet.Account.PublicKey.Key, config.InitialAmount);
             
@@ -307,6 +311,9 @@ public class ThreadManager : IThreadManager
                 _logger.LogDebug("Auto-refill triggered for thread {ThreadId}: balance {Current} < threshold {Threshold}", 
                     config.ThreadId, currentBalance, threshold);
 
+                // Ensure ATA exists before minting
+                await _solanaClient.EnsureAtaExistsAsync(wallet, tokenMint);
+                
                 // Mint full initial amount again (not just the deficit)
                 await _solanaClient.MintTokensAsync(tokenMint, wallet.Account.PublicKey.Key, config.InitialAmount);
                 
@@ -332,13 +339,24 @@ public class ThreadManager : IThreadManager
             var solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
             if (solBalance < 1000000) // Less than 0.001 SOL for fees
             {
-                _logger.LogWarning("Insufficient SOL balance for fees in thread {ThreadId}", config.ThreadId);
-                return ("deposit_insufficient_sol", false, 0);
+                _logger.LogWarning("Insufficient SOL balance for fees in thread {ThreadId}, requesting SOL transfer", config.ThreadId);
+                var transferred = await TransferSolFromCoreWallet(wallet.Account.PublicKey.Key);
+                if (!transferred)
+                {
+                    return ("deposit_insufficient_sol", false, 0);
+                }
+                // Re-check balance after transfer
+                solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
             }
 
             // Get pool state and determine token mint
             var pool = await _solanaClient.GetPoolStateAsync(config.PoolId);
             var tokenMint = config.TokenType == TokenType.A ? pool.TokenAMint : pool.TokenBMint;
+            var lpMint = config.TokenType == TokenType.A ? pool.LpMintA : pool.LpMintB;
+            
+            // Ensure ATAs exist for both token and LP token
+            await _solanaClient.EnsureAtaExistsAsync(wallet, tokenMint);
+            await _solanaClient.EnsureAtaExistsAsync(wallet, lpMint);
             
             // Check for auto-refill before checking balance
             await CheckAndExecuteAutoRefill(config, wallet, tokenMint);
@@ -393,13 +411,22 @@ public class ThreadManager : IThreadManager
             var solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
             if (solBalance < 1000000) // Less than 0.001 SOL for fees
             {
-                _logger.LogWarning("Insufficient SOL balance for fees in thread {ThreadId}", config.ThreadId);
-                return ("withdrawal_insufficient_sol", false, 0);
+                _logger.LogWarning("Insufficient SOL balance for fees in thread {ThreadId}, requesting SOL transfer", config.ThreadId);
+                var transferred = await TransferSolFromCoreWallet(wallet.Account.PublicKey.Key);
+                if (!transferred)
+                {
+                    return ("withdrawal_insufficient_sol", false, 0);
+                }
             }
 
             // Get pool state and determine LP mint
             var pool = await _solanaClient.GetPoolStateAsync(config.PoolId);
             var lpMint = config.TokenType == TokenType.A ? pool.LpMintA : pool.LpMintB;
+            var tokenMint = config.TokenType == TokenType.A ? pool.TokenAMint : pool.TokenBMint;
+            
+            // Ensure ATAs exist for both LP token and regular token
+            await _solanaClient.EnsureAtaExistsAsync(wallet, lpMint);
+            await _solanaClient.EnsureAtaExistsAsync(wallet, tokenMint);
             
             // Check actual LP token balance for withdrawal
             var lpBalance = await _solanaClient.GetTokenBalanceAsync(wallet.Account.PublicKey.Key, lpMint);
@@ -515,6 +542,11 @@ public class ThreadManager : IThreadManager
                 {
                     if (targetThread.PublicKey != null)
                     {
+                        // Ensure target thread has ATA for LP tokens
+                        var targetWallet = _walletCache.TryGetValue(targetThread.ThreadId, out var cached) ? cached : 
+                            _solanaClient.RestoreWallet(targetThread.PrivateKey!);
+                        await _solanaClient.EnsureAtaExistsAsync(targetWallet, lpMint);
+                        
                         await _solanaClient.TransferTokensAsync(
                             sourceWallet, targetThread.PublicKey, lpMint, sharePerThread);
                         
@@ -575,6 +607,11 @@ public class ThreadManager : IThreadManager
                 {
                     if (targetThread.PublicKey != null)
                     {
+                        // Ensure target thread has ATA for tokens
+                        var targetWallet = _walletCache.TryGetValue(targetThread.ThreadId, out var cached) ? cached : 
+                            _solanaClient.RestoreWallet(targetThread.PrivateKey!);
+                        await _solanaClient.EnsureAtaExistsAsync(targetWallet, tokenMint);
+                        
                         await _solanaClient.TransferTokensAsync(
                             sourceWallet, targetThread.PublicKey, tokenMint, sharePerThread);
                         
@@ -594,6 +631,53 @@ public class ThreadManager : IThreadManager
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to share tokens from withdrawal thread {ThreadId}", sourceConfig.ThreadId);
+        }
+    }
+
+    private async Task<bool> TransferSolFromCoreWallet(string recipientAddress)
+    {
+        try
+        {
+            // Get core wallet
+            var coreWallet = await _solanaClient.GetOrCreateCoreWalletAsync();
+            
+            // Check core wallet balance
+            var coreBalance = await _solanaClient.GetSolBalanceAsync(coreWallet.PublicKey);
+            if (coreBalance <= 100_000_000) // Keep at least 0.1 SOL in core wallet
+            {
+                _logger.LogWarning("Core wallet balance too low ({Balance} SOL) to transfer SOL", coreBalance / 1_000_000_000.0);
+                return false;
+            }
+            
+            // Calculate 1% of remaining balance (minus reserve)
+            var availableBalance = coreBalance - 100_000_000; // Subtract reserve
+            var transferAmount = availableBalance / 100; // 1% of available
+            
+            // Ensure minimum transfer of 0.01 SOL
+            transferAmount = Math.Max(transferAmount, 10_000_000); // 0.01 SOL minimum
+            
+            _logger.LogDebug("Transferring {Amount} SOL from core wallet to thread wallet {Recipient}", 
+                transferAmount / 1_000_000_000.0, recipientAddress);
+            
+            // Restore core wallet from private key
+            var coreWalletPrivateKey = Convert.FromBase64String(coreWallet.PrivateKey);
+            var coreWalletInstance = _solanaClient.RestoreWallet(coreWalletPrivateKey);
+            
+            // Build and send SOL transfer transaction
+            var transferTx = await _transactionBuilder.BuildSolTransferTransactionAsync(
+                coreWalletInstance, recipientAddress, transferAmount);
+            var signature = await _solanaClient.SendTransactionAsync(transferTx);
+            await _solanaClient.ConfirmTransactionAsync(signature);
+            
+            _logger.LogInformation("Successfully transferred {Amount} SOL to thread wallet {Recipient}", 
+                transferAmount / 1_000_000_000.0, recipientAddress);
+            
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to transfer SOL from core wallet to {Recipient}", recipientAddress);
+            return false;
         }
     }
 }

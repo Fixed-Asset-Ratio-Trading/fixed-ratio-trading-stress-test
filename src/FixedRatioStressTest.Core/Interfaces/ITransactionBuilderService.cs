@@ -85,4 +85,12 @@ public interface ITransactionBuilderService
     Task<string> GetOrCreateAssociatedTokenAccountAsync(
         Wallet wallet, 
         string mintAddress);
+    
+    /// <summary>
+    /// Builds a transaction for transferring SOL
+    /// </summary>
+    Task<byte[]> BuildSolTransferTransactionAsync(
+        Wallet fromWallet,
+        string toWalletAddress,
+        ulong lamports);
 }

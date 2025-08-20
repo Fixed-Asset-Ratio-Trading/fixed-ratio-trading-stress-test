@@ -738,6 +738,36 @@ public class TransactionBuilderService : ITransactionBuilderService
             }
         }
         
+        public async Task<byte[]> BuildSolTransferTransactionAsync(
+            Wallet fromWallet,
+            string toWalletAddress,
+            ulong lamports)
+        {
+            try
+            {
+                _logger.LogDebug("Building SOL transfer transaction: {Lamports} lamports to {Recipient}", 
+                    lamports, toWalletAddress);
+                
+                var toPublicKey = new PublicKey(toWalletAddress);
+                var blockHash = await GetRecentBlockHashAsync();
+                
+                var transactionBuilder = new TransactionBuilder()
+                    .SetRecentBlockHash(blockHash)
+                    .SetFeePayer(fromWallet.Account.PublicKey)
+                    .AddInstruction(SystemProgram.Transfer(
+                        fromWallet.Account.PublicKey,
+                        toPublicKey,
+                        lamports));
+                
+                return transactionBuilder.Build(fromWallet.Account);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to build SOL transfer transaction");
+                throw;
+            }
+        }
+        
         // PDA derivation helpers
         public PublicKey DeriveSystemStatePda()
         {
