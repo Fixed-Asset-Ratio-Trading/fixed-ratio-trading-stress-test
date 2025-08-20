@@ -27,6 +27,11 @@ public interface ISolanaClientService
     Task<ulong> GetTokenBalanceAsync(string publicKey, string mintAddress);
     
     /// <summary>
+    /// Gets token balance with retry logic and backoff for post-mint verification
+    /// </summary>
+    Task<ulong> GetTokenBalanceWithRetryAsync(string publicKey, string mintAddress, ulong expectedMinimum = 0, int maxRetries = 5);
+    
+    /// <summary>
     /// Checks if the Solana connection is healthy
     /// </summary>
     Task<bool> IsHealthyAsync();

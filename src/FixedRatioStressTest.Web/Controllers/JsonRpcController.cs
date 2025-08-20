@@ -1,5 +1,6 @@
 using FixedRatioStressTest.Common.Models;
 using FixedRatioStressTest.Core.Interfaces;
+using FixedRatioStressTest.Core.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
@@ -11,12 +12,14 @@ public class JsonRpcController : ControllerBase
 {
     private readonly ISolanaClientService _solanaClient;
     private readonly IThreadManager _threadManager;
+    private readonly IEmptyCommandHandler _emptyHandler;
     private readonly ILogger<JsonRpcController> _logger;
 
-    public JsonRpcController(ISolanaClientService solanaClient, IThreadManager threadManager, ILogger<JsonRpcController> logger)
+    public JsonRpcController(ISolanaClientService solanaClient, IThreadManager threadManager, IEmptyCommandHandler emptyHandler, ILogger<JsonRpcController> logger)
     {
         _solanaClient = solanaClient;
         _threadManager = threadManager;
+        _emptyHandler = emptyHandler;
         _logger = logger;
     }
 
@@ -35,12 +38,14 @@ public class JsonRpcController : ControllerBase
                 // Thread management
                 "create_deposit_thread" => await CreateDepositThread(request),
                 "create_withdrawal_thread" => await CreateWithdrawalThread(request),
+                "create_swap_thread" => await CreateSwapThread(request),
                 "start_thread" => await StartThreadById(request),
                 "stop_thread" => await StopThreadById(request),
                 "delete_thread" => await DeleteThreadById(request),
                 "get_thread" => await GetThreadById(request),
                 "list_threads" => await ListThreads(request),
                 "stop_all_pool_threads" => await StopAllPoolThreads(request),
+                "empty_thread" => await EmptyThread(request),
                 "core_wallet_status" => await GetCoreWalletStatus(request),
                 "airdrop_sol" => await AirdropSol(request),
                 "stop_service" => await StopService(request),
@@ -142,6 +147,67 @@ public class JsonRpcController : ControllerBase
         }
     }
 
+    private async Task<ActionResult<object>> CreateSwapThread(JsonRpcRequest request)
+    {
+        try
+        {
+            if (request.Params is System.Text.Json.JsonElement el && el.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                var poolId = el.TryGetProperty("pool_id", out var poolEl) ? poolEl.GetString() ?? string.Empty : string.Empty;
+                var directionStr = el.TryGetProperty("direction", out var dirEl) ? dirEl.GetString() ?? "a_to_b" : "a_to_b";
+                var initialAmount = el.TryGetProperty("initial_amount", out var amountEl) && amountEl.TryGetUInt64(out var amt) ? amt : 0UL;
+                
+                if (string.IsNullOrWhiteSpace(poolId))
+                {
+                    return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "pool_id is required" }, Id = request.Id });
+                }
+
+                // Parse swap direction
+                var swapDirection = string.Equals(directionStr, "b_to_a", StringComparison.OrdinalIgnoreCase) ? SwapDirection.BToA : SwapDirection.AToB;
+
+                // Check if a swap thread with this direction already exists for the pool
+                var existingThreads = await _threadManager.GetAllThreadsAsync();
+                var existingSwapThread = existingThreads.FirstOrDefault(t => 
+                    t.ThreadType == ThreadType.Swap && 
+                    t.PoolId == poolId && 
+                    t.SwapDirection == swapDirection);
+
+                if (existingSwapThread != null)
+                {
+                    return Ok(new JsonRpcResponse<object> 
+                    { 
+                        Error = new JsonRpcError 
+                        { 
+                            Code = -1001, 
+                            Message = $"Swap thread for direction '{directionStr}' already exists for pool {poolId}" 
+                        }, 
+                        Id = request.Id 
+                    });
+                }
+
+                var config = new ThreadConfig
+                {
+                    ThreadType = ThreadType.Swap,
+                    PoolId = poolId,
+                    SwapDirection = swapDirection,
+                    InitialAmount = initialAmount,
+                    AutoRefill = false,
+                    ShareTokens = true // Swap threads always share tokens with opposite direction
+                };
+
+                var threadId = await _threadManager.CreateThreadAsync(config);
+                var result = new { threadId, walletAddress = config.PublicKey, status = "created" };
+                return Ok(new JsonRpcResponse<object> { Result = result, Id = request.Id });
+            }
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "Invalid params for swap thread" }, Id = request.Id });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create swap thread");
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32603, Message = ex.Message }, Id = request.Id });
+        }
+    }
+
     private async Task<ActionResult<object>> StartThreadById(JsonRpcRequest request)
     {
         var id = ExtractThreadId(request.Params);
@@ -207,6 +273,50 @@ public class JsonRpcController : ControllerBase
             return Ok(new JsonRpcResponse<object> { Result = new { poolId, stopped = count }, Id = request.Id });
         }
         return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "Invalid params" }, Id = request.Id });
+    }
+
+    private async Task<ActionResult<object>> EmptyThread(JsonRpcRequest request)
+    {
+        try
+        {
+            var id = ExtractThreadId(request.Params);
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "thread_id is required" }, Id = request.Id });
+            }
+
+            var result = await _emptyHandler.ExecuteEmptyCommandAsync(id);
+            
+            return Ok(new JsonRpcResponse<object> 
+            { 
+                Result = new 
+                { 
+                    thread_id = result.ThreadId,
+                    thread_type = result.ThreadType,
+                    empty_operation = new
+                    {
+                        tokens_used = result.TokensUsed,
+                        lp_tokens_received = result.LpTokensReceived,
+                        lp_tokens_used = result.LpTokensUsed,
+                        tokens_withdrawn = result.TokensWithdrawn,
+                        tokens_swapped_in = result.TokensSwappedIn,
+                        tokens_swapped_out = result.TokensSwappedOut,
+                        tokens_burned = result.TokensBurned,
+                        operation_successful = result.OperationSuccessful,
+                        error_message = result.ErrorMessage,
+                        transaction_signature = result.TransactionSignature,
+                        network_fee_paid = result.NetworkFeePaid,
+                        swap_direction = result.SwapDirection
+                    }
+                }, 
+                Id = request.Id 
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to empty thread");
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32603, Message = ex.Message }, Id = request.Id });
+        }
     }
 
     private static string ExtractThreadId(object? parameters)

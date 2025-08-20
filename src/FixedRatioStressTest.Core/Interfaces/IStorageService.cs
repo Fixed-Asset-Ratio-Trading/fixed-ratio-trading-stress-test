@@ -24,6 +24,7 @@ public interface IStorageService
     Task SaveRealPoolAsync(RealPoolData pool);
     Task DeleteRealPoolAsync(string poolId);
     Task<List<StressTestTokenMint>> LoadTokenMintsAsync();
+    Task<StressTestTokenMint?> LoadTokenMintAsync(string mintAddress);
     Task SaveTokenMintAsync(StressTestTokenMint tokenMint);
 }
 

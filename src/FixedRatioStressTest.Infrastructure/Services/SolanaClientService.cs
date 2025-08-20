@@ -41,6 +41,9 @@ namespace FixedRatioStressTest.Infrastructure.Services
             var rpcUrl = _config.GetActiveRpcUrl();
             _rpcClient = ClientFactory.GetClient(rpcUrl);
             _logger.LogInformation("Initialized Solana client with RPC URL: {RpcUrl}", rpcUrl);
+            
+            // Hydrate mint authorities at startup
+            _ = Task.Run(async () => await HydrateMintAuthoritiesAsync());
         }
 
         public Wallet GenerateWallet()
@@ -77,15 +80,45 @@ namespace FixedRatioStressTest.Infrastructure.Services
         {
             try
             {
-                var tokenAccounts = await _rpcClient.GetTokenAccountsByOwnerAsync(
-                    publicKey, 
-                    mintAddress, 
-                    TokenProgram.ProgramIdKey.ToString());
+                // Derive the exact ATA for owner+mint and query its balance directly
+                var ownerPk = new PublicKey(publicKey);
+                var mintPk = new PublicKey(mintAddress);
+                var ata = AssociatedTokenAccountProgram.DeriveAssociatedTokenAccount(ownerPk, mintPk);
                 
-                if (tokenAccounts.Result?.Value?.Count > 0)
+                _logger.LogDebug("Checking token balance at ATA {ATA} (owner {Owner}, mint {Mint})", ata, ownerPk, mintPk);
+
+                // Try progressively stronger commitments
+                var balanceInfo = await _rpcClient.GetTokenAccountBalanceAsync(ata.ToString(), Solnet.Rpc.Types.Commitment.Processed);
+                var value = balanceInfo.Result?.Value;
+                if (value == null)
                 {
-                    var account = tokenAccounts.Result.Value[0];
-                    return account.Account.Data.Parsed.Info.TokenAmount.AmountUlong;
+                    _logger.LogDebug("No balance at Processed, trying Confirmed for ATA {ATA}", ata);
+                    balanceInfo = await _rpcClient.GetTokenAccountBalanceAsync(ata.ToString(), Solnet.Rpc.Types.Commitment.Confirmed);
+                    value = balanceInfo.Result?.Value;
+                }
+                if (value == null)
+                {
+                    _logger.LogDebug("No balance at Confirmed, trying Finalized for ATA {ATA}", ata);
+                    balanceInfo = await _rpcClient.GetTokenAccountBalanceAsync(ata.ToString(), Solnet.Rpc.Types.Commitment.Finalized);
+                    value = balanceInfo.Result?.Value;
+                }
+                if (value == null)
+                {
+                    return 0;
+                }
+                
+                // Prefer AmountUlong if available; otherwise parse UiAmountString safely
+                if (value.AmountUlong != 0)
+                {
+                    return value.AmountUlong;
+                }
+                
+                if (!string.IsNullOrEmpty(value.Amount))
+                {
+                    if (ulong.TryParse(value.Amount, out var raw))
+                    {
+                        return raw;
+                    }
                 }
                 
                 return 0;
@@ -95,6 +128,81 @@ namespace FixedRatioStressTest.Infrastructure.Services
                 _logger.LogError(ex, "Failed to get token balance for {PublicKey} mint {MintAddress}", publicKey, mintAddress);
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Gets token balance with retry logic and backoff for post-mint verification
+        /// </summary>
+        public async Task<ulong> GetTokenBalanceWithRetryAsync(string publicKey, string mintAddress, ulong expectedMinimum = 0, int maxRetries = 5)
+        {
+            var delays = new[] { 500, 1000, 2000, 3000, 5000 }; // Progressive backoff in milliseconds
+            
+            for (int attempt = 0; attempt < maxRetries; attempt++)
+            {
+                try
+                {
+                    var balance = await GetTokenBalanceAsync(publicKey, mintAddress);
+                    
+                    if (balance >= expectedMinimum)
+                    {
+                        if (attempt > 0)
+                        {
+                            _logger.LogDebug("Token balance {Balance} found for {PublicKey} on attempt {Attempt}/{MaxRetries}", 
+                                balance, publicKey, attempt + 1, maxRetries);
+                        }
+                        return balance;
+                    }
+                    
+                    if (attempt < maxRetries - 1)
+                    {
+                        var delay = delays[Math.Min(attempt, delays.Length - 1)];
+                        _logger.LogDebug("Token balance {Balance} below expected {Expected} for {PublicKey}, retrying in {Delay}ms (attempt {Attempt}/{MaxRetries})", 
+                            balance, expectedMinimum, publicKey, delay, attempt + 1, maxRetries);
+                        await Task.Delay(delay);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Token balance {Balance} still below expected {Expected} after {MaxRetries} attempts for {PublicKey}. Enumerating owner token accounts...", 
+                            balance, expectedMinimum, maxRetries, publicKey);
+                        try
+                        {
+                            var all = await _rpcClient.GetTokenAccountsByOwnerAsync(publicKey, TokenProgram.ProgramIdKey.ToString());
+                            var count = all.Result?.Value?.Count ?? 0;
+                            _logger.LogWarning("Owner {PublicKey} has {Count} token accounts", publicKey, count);
+                            if (count > 0)
+                            {
+                                foreach (var acc in all.Result!.Value!)
+                                {
+                                    _logger.LogWarning(" - TokenAccount: {Pubkey} Mint: {Mint} Amount: {Amount}",
+                                        acc.PublicKey, acc.Account.Data.Parsed.Info.Mint, acc.Account.Data.Parsed.Info.TokenAmount.Amount);
+                                }
+                            }
+                        }
+                        catch (Exception enumEx)
+                        {
+                            _logger.LogWarning(enumEx, "Failed to enumerate token accounts for {PublicKey}", publicKey);
+                        }
+                        return balance; // Return actual balance even if below expected
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (attempt < maxRetries - 1)
+                    {
+                        var delay = delays[Math.Min(attempt, delays.Length - 1)];
+                        _logger.LogWarning(ex, "Token balance check failed for {PublicKey}, retrying in {Delay}ms (attempt {Attempt}/{MaxRetries})", 
+                            publicKey, delay, attempt + 1, maxRetries);
+                        await Task.Delay(delay);
+                    }
+                    else
+                    {
+                        _logger.LogError(ex, "Token balance check failed after {MaxRetries} attempts for {PublicKey}", maxRetries, publicKey);
+                        throw;
+                    }
+                }
+            }
+            
+            return 0; // Should never reach here
         }
 
         public async Task<bool> IsHealthyAsync()
@@ -769,6 +877,10 @@ public async Task CleanupInvalidPoolsAsync()
             
             // Save to storage
             await _storageService.SaveTokenMintAsync(tokenMint);
+            
+            // Register mint authority in memory map for future minting operations
+            _mintAuthorities[mintAddress] = coreKeyPair;
+            _logger.LogDebug("✅ Registered mint authority for {MintAddress}", mintAddress);
             
             _logger.LogDebug("✅ Token mint created successfully: {MintAddress}", mintAddress);
             return tokenMint;
@@ -1530,7 +1642,26 @@ public async Task CleanupInvalidPoolsAsync()
             {
                 if (!_mintAuthorities.TryGetValue(tokenMint, out var mintAuthority))
                 {
-                    throw new InvalidOperationException($"No mint authority for token {tokenMint}");
+                    _logger.LogDebug("Mint authority not found in cache for {TokenMint}, checking storage for core wallet fallback", tokenMint);
+                    
+                    // Fallback: Check if this mint was created with core wallet as authority
+                    var savedMint = await _storageService.LoadTokenMintAsync(tokenMint);
+                    var coreWallet = await _storageService.LoadCoreWalletAsync();
+                    
+                    if (savedMint != null && coreWallet != null && savedMint.MintAuthority == coreWallet.PublicKey)
+                    {
+                        _logger.LogDebug("Found core wallet as mint authority for {TokenMint}, using fallback", tokenMint);
+                        var privateKeyBytes = Convert.FromBase64String(coreWallet.PrivateKey);
+                        mintAuthority = RestoreWallet(privateKeyBytes);
+                        
+                        // Cache for future use
+                        _mintAuthorities[tokenMint] = mintAuthority;
+                        _logger.LogDebug("Cached core wallet as mint authority for {TokenMint}", tokenMint);
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException($"No mint authority for token {tokenMint}. Saved mint: {savedMint != null}, Core wallet: {coreWallet != null}, Authority match: {savedMint?.MintAuthority == coreWallet?.PublicKey}");
+                    }
                 }
                 
                 var transaction = await _transactionBuilder.BuildMintTransactionAsync(
@@ -1938,7 +2069,32 @@ public async Task CleanupInvalidPoolsAsync()
                 {
                     return result.Result;
                 }
-                
+                _logger.LogWarning("Transaction submit failed. Reason: {Reason}, Http: {Status}", result.Reason, result.HttpStatusCode);
+                try
+                {
+                    // Simulate to capture detailed program logs
+                    var sim = await _rpcClient.SimulateTransactionAsync(transaction, sigVerify: false, Solnet.Rpc.Types.Commitment.Processed, replaceRecentBlockhash: true);
+                    if (sim.WasRequestSuccessfullyHandled)
+                    {
+                        var logs = sim.Result?.Value?.Logs ?? Array.Empty<string>();
+                        if (logs.Length > 0)
+                        {
+                            _logger.LogWarning("Simulation logs:\n{Logs}", string.Join("\n", logs));
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Simulation returned no logs.");
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Simulation failed: {Reason}", sim.Reason);
+                    }
+                }
+                catch (Exception simEx)
+                {
+                    _logger.LogWarning(simEx, "Simulation attempt failed");
+                }
                 throw new InvalidOperationException($"Transaction failed: {result.Reason}");
             }
             catch (Exception ex)
@@ -1974,6 +2130,46 @@ public async Task CleanupInvalidPoolsAsync()
             }
             
             return false;
+        }
+
+        /// <summary>
+        /// Hydrates mint authorities from saved token mints at startup
+        /// </summary>
+        private async Task HydrateMintAuthoritiesAsync()
+        {
+            try
+            {
+                _logger.LogDebug("🔄 Hydrating mint authorities from saved token mints...");
+                
+                var savedMints = await _storageService.LoadTokenMintsAsync();
+                var coreWallet = await _storageService.LoadCoreWalletAsync();
+                
+                if (coreWallet == null)
+                {
+                    _logger.LogDebug("No core wallet found during hydration, skipping mint authority setup");
+                    return;
+                }
+                
+                var privateKeyBytes = Convert.FromBase64String(coreWallet.PrivateKey);
+                var coreWalletInstance = RestoreWallet(privateKeyBytes);
+                
+                int hydratedCount = 0;
+                foreach (var mint in savedMints)
+                {
+                    if (mint.MintAuthority == coreWallet.PublicKey)
+                    {
+                        _mintAuthorities[mint.MintAddress] = coreWalletInstance;
+                        hydratedCount++;
+                        _logger.LogDebug("Hydrated mint authority for {MintAddress}", mint.MintAddress);
+                    }
+                }
+                
+                _logger.LogInformation("✅ Hydrated {Count} mint authorities from storage", hydratedCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to hydrate mint authorities - minting may require fallback logic");
+            }
         }
         
         /// <summary>

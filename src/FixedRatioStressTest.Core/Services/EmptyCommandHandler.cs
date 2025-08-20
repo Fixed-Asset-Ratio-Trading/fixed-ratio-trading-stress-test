@@ -10,22 +10,58 @@ namespace FixedRatioStressTest.Core.Services
     public interface IEmptyCommandHandler
     {
         Task<EmptyResult> ExecuteEmptyAsync(ThreadContext context);
+        Task<EmptyResult> ExecuteEmptyCommandAsync(string threadId);
     }
     
     public class EmptyCommandHandler : IEmptyCommandHandler
     {
         private readonly ISolanaClientService _solanaClient;
         private readonly ITransactionBuilderService _transactionBuilder;
+        private readonly IStorageService _storageService;
         private readonly ILogger<EmptyCommandHandler> _logger;
         
         public EmptyCommandHandler(
             ISolanaClientService solanaClient,
             ITransactionBuilderService transactionBuilder,
+            IStorageService storageService,
             ILogger<EmptyCommandHandler> logger)
         {
             _solanaClient = solanaClient;
             _transactionBuilder = transactionBuilder;
+            _storageService = storageService;
             _logger = logger;
+        }
+
+        public async Task<EmptyResult> ExecuteEmptyCommandAsync(string threadId)
+        {
+            // Load thread config and build context
+            var config = await _storageService.LoadThreadConfigAsync(threadId);
+            if (config == null)
+            {
+                return new EmptyResult
+                {
+                    ThreadId = threadId,
+                    OperationSuccessful = false,
+                    ErrorMessage = $"Thread {threadId} not found"
+                };
+            }
+
+            var wallet = _solanaClient.RestoreWallet(config.PrivateKey);
+            var context = new ThreadContext
+            {
+                ThreadId = config.ThreadId,
+                ThreadType = config.ThreadType,
+                PoolId = config.PoolId,
+                TokenType = config.TokenType,
+                SwapDirection = config.SwapDirection,
+                WalletAddress = config.PublicKey,
+                Wallet = wallet,
+                AutoRefill = config.AutoRefill,
+                InitialAmount = config.InitialAmount,
+                ShareLpTokens = config.ShareTokens
+            };
+
+            return await ExecuteEmptyAsync(context);
         }
         
         public async Task<EmptyResult> ExecuteEmptyAsync(ThreadContext context)

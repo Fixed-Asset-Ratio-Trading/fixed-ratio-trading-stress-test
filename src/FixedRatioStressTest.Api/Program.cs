@@ -114,6 +114,7 @@ builder.Services.AddSingleton<IContractVersionService, RawRpcContractVersionServ
 builder.Services.AddSingleton<ISolanaClientService, SolanaClientService>();
 builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
 builder.Services.AddSingleton<IThreadManager, ThreadManager>();
+builder.Services.AddSingleton<IEmptyCommandHandler, EmptyCommandHandler>();
 
 // Remove legacy IEventLogger adapter (fully migrated to ILogger<T>)
 

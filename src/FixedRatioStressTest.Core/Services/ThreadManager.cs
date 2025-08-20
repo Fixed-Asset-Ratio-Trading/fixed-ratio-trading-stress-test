@@ -285,8 +285,12 @@ public class ThreadManager : IThreadManager
             // Mint initial tokens to the thread's wallet
             await _solanaClient.MintTokensAsync(tokenMint, wallet.Account.PublicKey.Key, config.InitialAmount);
             
-            _logger.LogInformation("Successfully funded deposit thread {ThreadId} with {Amount} tokens of type {TokenType}", 
-                config.ThreadId, config.InitialAmount, config.TokenType);
+            // Wait for tokens to be visible on blockchain with retry logic
+            var actualBalance = await _solanaClient.GetTokenBalanceWithRetryAsync(
+                wallet.Account.PublicKey.Key, tokenMint, config.InitialAmount, maxRetries: 5);
+            
+            _logger.LogInformation("Successfully funded deposit thread {ThreadId} with {Amount} tokens of type {TokenType} (verified balance: {ActualBalance})", 
+                config.ThreadId, config.InitialAmount, config.TokenType, actualBalance);
         }
         catch (Exception ex)
         {
@@ -317,8 +321,12 @@ public class ThreadManager : IThreadManager
                 // Mint full initial amount again (not just the deficit)
                 await _solanaClient.MintTokensAsync(tokenMint, wallet.Account.PublicKey.Key, config.InitialAmount);
                 
-                _logger.LogInformation("Auto-refilled deposit thread {ThreadId} with {Amount} tokens", 
-                    config.ThreadId, config.InitialAmount);
+                // Wait for tokens to be visible on blockchain with retry logic
+                var actualBalance = await _solanaClient.GetTokenBalanceWithRetryAsync(
+                    wallet.Account.PublicKey.Key, tokenMint, config.InitialAmount, maxRetries: 5);
+                
+                _logger.LogInformation("Auto-refilled deposit thread {ThreadId} with {Amount} tokens (verified balance: {ActualBalance})", 
+                    config.ThreadId, config.InitialAmount, actualBalance);
             }
         }
         catch (Exception ex)
@@ -361,8 +369,11 @@ public class ThreadManager : IThreadManager
             // Check for auto-refill before checking balance
             await CheckAndExecuteAutoRefill(config, wallet, tokenMint);
             
-            // Check actual token balance for deposit
-            var tokenBalance = await _solanaClient.GetTokenBalanceAsync(wallet.Account.PublicKey.Key, tokenMint);
+            // Cooldown to avoid immediate re-triggering while chain converges
+            await Task.Delay(500);
+            
+            // Check actual token balance for deposit with retry logic (in case auto-refill just happened)
+            var tokenBalance = await _solanaClient.GetTokenBalanceWithRetryAsync(wallet.Account.PublicKey.Key, tokenMint, expectedMinimum: 1, maxRetries: 3);
             if (tokenBalance == 0)
             {
                 _logger.LogDebug("No tokens available for deposit in thread {ThreadId}, waiting...", config.ThreadId);
@@ -472,28 +483,85 @@ public class ThreadManager : IThreadManager
     {
         try
         {
-            // Phase 3: Implement swap logic
-            _logger.LogDebug("Executing swap operation for thread {ThreadId}", config.ThreadId);
+            _logger.LogDebug("Executing swap operation for thread {ThreadId}, direction: {Direction}", 
+                config.ThreadId, config.SwapDirection);
 
-            // Check balance for input token
+            // Check SOL balance for transaction fees
             var solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
             if (solBalance < 1000000) // Less than 0.001 SOL for fees
             {
-                _logger.LogWarning("Insufficient balance for swap operation in thread {ThreadId}", config.ThreadId);
-                return ("swap_insufficient_balance", false, 0);
+                _logger.LogWarning("Insufficient SOL balance for fees in thread {ThreadId}, requesting SOL transfer", config.ThreadId);
+                var transferred = await TransferSolFromCoreWallet(wallet.Account.PublicKey.Key);
+                if (!transferred)
+                {
+                    return ("swap_insufficient_sol", false, 0);
+                }
             }
 
-            // Calculate swap amount (up to 2% of balance as per design)
-            var swapAmount = (ulong)random.Next(1000, Math.Max(1001, (int)(solBalance * 0.02)));
-            var minimumOutput = swapAmount * 95 / 100; // 5% slippage tolerance
+            // Get pool state to determine token mints
+            var pool = await _solanaClient.GetPoolStateAsync(config.PoolId);
+            var swapDirection = config.SwapDirection ?? SwapDirection.AToB;
+            
+            // Determine input and output token mints based on swap direction
+            var inputMint = swapDirection == SwapDirection.AToB ? pool.TokenAMint : pool.TokenBMint;
+            var outputMint = swapDirection == SwapDirection.AToB ? pool.TokenBMint : pool.TokenAMint;
+            
+            // Ensure ATAs exist for both input and output tokens
+            await _solanaClient.EnsureAtaExistsAsync(wallet, inputMint);
+            await _solanaClient.EnsureAtaExistsAsync(wallet, outputMint);
+            
+            // Check for initial funding if this is the first run
+            if (config.InitialAmount > 0 && !config.AutoRefill)
+            {
+                // Mark as refilled to prevent repeated funding
+                config.AutoRefill = true;
+                await _storageService.SaveThreadConfigAsync(config.ThreadId, config);
+                
+                // Fund with initial tokens
+                await _solanaClient.MintTokensAsync(inputMint, wallet.Account.PublicKey.Key, config.InitialAmount);
+                
+                // Wait for tokens to be visible on blockchain with retry logic
+                var actualBalance = await _solanaClient.GetTokenBalanceWithRetryAsync(
+                    wallet.Account.PublicKey.Key, inputMint, config.InitialAmount, maxRetries: 5);
+                
+                _logger.LogInformation("Funded swap thread {ThreadId} with {Amount} initial tokens (verified balance: {ActualBalance})", 
+                    config.ThreadId, config.InitialAmount, actualBalance);
+            }
+            
+            // Check actual input token balance for swap with retry logic (in case initial funding just happened)
+            var inputBalance = await _solanaClient.GetTokenBalanceWithRetryAsync(wallet.Account.PublicKey.Key, inputMint, expectedMinimum: 1, maxRetries: 3);
+            if (inputBalance == 0)
+            {
+                _logger.LogDebug("No input tokens available for swap in thread {ThreadId}, waiting...", config.ThreadId);
+                return ("swap_waiting", false, 0);
+            }
+
+            // Calculate random swap amount (up to 2% of input token balance as per design)
+            ulong maxPortion = (ulong)Math.Max(1001, (long)(inputBalance * 2 / 100)); // 2% max
+            var upper = (int)Math.Min(int.MaxValue, maxPortion);
+            var swapAmount = (ulong)random.Next(1000, Math.Max(1001, upper));
+            
+            // Ensure we don't try to swap more than available
+            swapAmount = Math.Min(swapAmount, inputBalance);
+            
+            // Calculate minimum output with 5% slippage tolerance
+            var expectedOutput = swapDirection == SwapDirection.AToB 
+                ? (swapAmount * pool.RatioBDenominator) / pool.RatioANumerator
+                : (swapAmount * pool.RatioANumerator) / pool.RatioBDenominator;
+            var minimumOutput = expectedOutput * 95 / 100; // 5% slippage tolerance
             
             // Submit swap transaction
             var result = await _solanaClient.ExecuteSwapAsync(
-                wallet, config.PoolId, config.SwapDirection ?? SwapDirection.AToB, swapAmount, minimumOutput);
-            var signature = result.TransactionSignature;
+                wallet, config.PoolId, swapDirection, swapAmount, minimumOutput);
+            
+            _logger.LogDebug("Swap completed for thread {ThreadId}: {Input} input tokens -> {Output} output tokens, direction: {Direction}, signature: {Signature}", 
+                config.ThreadId, swapAmount, result.OutputTokens, swapDirection, result.TransactionSignature);
 
-            _logger.LogDebug("Swap completed for thread {ThreadId}: {Amount} input, direction: {Direction}, signature: {Signature}", 
-                config.ThreadId, swapAmount, config.SwapDirection, signature);
+            // Share received tokens with opposite-direction swap thread if one exists
+            if (result.OutputTokens > 0)
+            {
+                await ShareTokensWithOppositeSwapThread(config, wallet, result.OutputTokens, outputMint);
+            }
 
             return ("swap", true, swapAmount);
         }
@@ -678,6 +746,50 @@ public class ThreadManager : IThreadManager
         {
             _logger.LogError(ex, "Failed to transfer SOL from core wallet to {Recipient}", recipientAddress);
             return false;
+        }
+    }
+
+    private async Task ShareTokensWithOppositeSwapThread(ThreadConfig sourceConfig, Wallet sourceWallet, ulong tokensToShare, string tokenMint)
+    {
+        try
+        {
+            // Find the opposite-direction swap thread for the same pool
+            var oppositeDirection = sourceConfig.SwapDirection == SwapDirection.AToB ? SwapDirection.BToA : SwapDirection.AToB;
+            var allThreads = await _storageService.LoadAllThreadsAsync();
+            var oppositeThread = allThreads.FirstOrDefault(t => 
+                t.ThreadType == ThreadType.Swap &&
+                t.PoolId == sourceConfig.PoolId &&
+                t.SwapDirection == oppositeDirection &&
+                t.Status == ThreadStatus.Running);
+
+            if (oppositeThread == null)
+            {
+                _logger.LogDebug("No opposite-direction swap thread found for pool {PoolId}", sourceConfig.PoolId);
+                return;
+            }
+
+            if (oppositeThread.PublicKey == null)
+            {
+                _logger.LogWarning("Opposite swap thread {ThreadId} has no public key", oppositeThread.ThreadId);
+                return;
+            }
+
+            // Ensure target thread has ATA for the tokens
+            var targetWallet = _walletCache.TryGetValue(oppositeThread.ThreadId, out var cached) ? cached : 
+                _solanaClient.RestoreWallet(oppositeThread.PrivateKey!);
+            await _solanaClient.EnsureAtaExistsAsync(targetWallet, tokenMint);
+            
+            // Transfer tokens to opposite swap thread
+            await _solanaClient.TransferTokensAsync(
+                sourceWallet, oppositeThread.PublicKey, tokenMint, tokensToShare);
+            
+            _logger.LogInformation("Shared {Amount} tokens from swap thread {Source} ({SourceDir}) to {Target} ({TargetDir})", 
+                tokensToShare, sourceConfig.ThreadId, sourceConfig.SwapDirection, 
+                oppositeThread.ThreadId, oppositeThread.SwapDirection);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to share tokens with opposite swap thread from {ThreadId}", sourceConfig.ThreadId);
         }
     }
 }

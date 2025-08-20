@@ -300,21 +300,37 @@ public class TransactionBuilderService : ITransactionBuilderService
                     _logger.LogDebug("User token account {0} balance: {1}", userTokenAccount, userTokenAccountInfo.Result.Value.UiAmount);
                 }
 
-                // Build account structure exactly as per API
+                // Build account structure exactly as per API (Deposit - 11 accounts):
+                // [0] User Authority Signer (signer)
+                // [1] System Program
+                // [2] System State PDA
+                // [3] Pool State PDA
+                // [4] SPL Token Program
+                // [5] Token A Vault PDA
+                // [6] Token B Vault PDA
+                // [7] User Input Token Account
+                // [8] User Output LP Token Account
+                // [9] LP Token A Mint PDA
+                // [10] LP Token B Mint PDA
+
+                var tokenAVault = new PublicKey(poolState.VaultA);
+                var tokenBVault = new PublicKey(poolState.VaultB);
+                var lpMintA = new PublicKey(poolState.LpMintA);
+                var lpMintB = new PublicKey(poolState.LpMintB);
+
                 var accounts = new List<AccountMeta>
                 {
-                    AccountMeta.Writable(wallet.Account.PublicKey, true),                   // [0] User Authority
-                    AccountMeta.ReadOnly(systemStatePda, false),                             // [1] System State PDA
-                    AccountMeta.Writable(new PublicKey(poolState.PoolId), false),           // [2] Pool State PDA
-                    AccountMeta.Writable(new PublicKey(userTokenAccount), false),           // [3] User Token Account
-                    AccountMeta.Writable(new PublicKey(depositVault), false),               // [4] Pool Token Vault
-                    AccountMeta.Writable(new PublicKey(otherTokenVault), false),            // [5] Other Token Vault
-                    AccountMeta.Writable(new PublicKey(lpMint), false),                     // [6] LP Token Mint
-                    AccountMeta.Writable(new PublicKey(userLpTokenAccount), false),         // [7] User LP Account
-                    AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),                 // [8] Token Program
-                    AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),                // [9] System Program
-                    AccountMeta.Writable(new PublicKey(poolState.MainTreasury), false),     // [10] Main Treasury PDA
-                    AccountMeta.ReadOnly(new PublicKey(depositTokenMint), false)            // [11] Deposit Token Mint
+                    AccountMeta.Writable(wallet.Account.PublicKey, true),                  // [0]
+                    AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),               // [1]
+                    AccountMeta.ReadOnly(systemStatePda, false),                            // [2]
+                    AccountMeta.Writable(new PublicKey(poolState.PoolId), false),          // [3]
+                    AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),                // [4]
+                    AccountMeta.Writable(tokenAVault, false),                               // [5]
+                    AccountMeta.Writable(tokenBVault, false),                               // [6]
+                    AccountMeta.Writable(new PublicKey(userTokenAccount), false),          // [7]
+                    AccountMeta.Writable(new PublicKey(userLpTokenAccount), false),        // [8]
+                    AccountMeta.Writable(lpMintA, false),                                   // [9]
+                    AccountMeta.Writable(lpMintB, false),                                   // [10]
                 };
 
                 // Build instruction data per API: [2][deposit_token_mint (32)][amount u64 LE]
@@ -323,11 +339,14 @@ public class TransactionBuilderService : ITransactionBuilderService
                 var mintBytes = new PublicKey(depositTokenMint).KeyBytes;
                 Array.Copy(mintBytes, 0, data, 1, 32);
                 var amountBytes = BitConverter.GetBytes(amountInBasisPoints);
+                if (!BitConverter.IsLittleEndian) Array.Reverse(amountBytes);
                 Array.Copy(amountBytes, 0, data, 33, 8);
                 
                 _logger.LogDebug("Instruction data: discriminator={0}, mint={1}, amount={2}, total_bytes={3}", 
                     data[0], depositTokenMint, amountInBasisPoints, data.Length);
                 _logger.LogDebug("Instruction data hex: {0}", Convert.ToHexString(data));
+                _logger.LogDebug("Using deposit vault {DepositVault}, other vault {OtherVault}, user ATA {UserATA}, LP ATA {LpATA}", 
+                    depositVault, otherTokenVault, userTokenAccount, userLpTokenAccount);
                 
                 // Debug log all accounts
                 for (int i = 0; i < accounts.Count; i++)
@@ -659,6 +678,8 @@ public class TransactionBuilderService : ITransactionBuilderService
                 // Get or create associated token account for recipient
                 var recipientTokenAccount = AssociatedTokenAccountProgram.DeriveAssociatedTokenAccount(
                     recipient, mint);
+                _logger.LogDebug("Mint recipient ATA is {ATA} for recipient {Recipient} mint {Mint}", 
+                    recipientTokenAccount, recipient, mint);
                 
                 var blockHash = await GetRecentBlockHashAsync();
                 var transactionBuilder = new TransactionBuilder()

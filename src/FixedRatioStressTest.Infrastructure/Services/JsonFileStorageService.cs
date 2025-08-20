@@ -438,6 +438,20 @@ public class JsonFileStorageService : IStorageService
         }
     }
 
+    public async Task<StressTestTokenMint?> LoadTokenMintAsync(string mintAddress)
+    {
+        try
+        {
+            var allMints = await LoadTokenMintsAsync();
+            return allMints.FirstOrDefault(m => m.MintAddress == mintAddress);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load token mint {MintAddress}", mintAddress);
+            return null;
+        }
+    }
+
     private async Task<Dictionary<string, ThreadStatistics>> LoadAllStatisticsAsync()
     {
         var statsFile = Path.Combine(_dataDirectory, "statistics.json");
