@@ -1,5 +1,29 @@
-$Port = if ($args.Length -ge 1) { $args[0] } else { 8080 }
+function Write-Usage {
+  Write-Error "Usage: .\list_threads.ps1 [port]"
+}
+
+# Parse arguments with optional leading [port]
+$index = 0
+if ($args.Length -ge 1 -and $args[0] -match '^[0-9]+$') {
+  $Port = [int]$args[0]
+  $index = 1
+} else {
+  $Port = 8080
+}
 
 $body = @{ method = 'list_threads'; params = @{}; id = 1 } | ConvertTo-Json -Compress
 
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/api/jsonrpc" -ContentType 'application/json' -Body $body | ConvertTo-Json
+try {
+  $resp = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/api/jsonrpc" -ContentType 'application/json' -Body $body
+  $resp | ConvertTo-Json -Depth 10
+} catch {
+  $err = $_
+  if ($err.Exception.Response -and $err.Exception.Response.GetResponseStream) {
+    $reader = New-Object System.IO.StreamReader($err.Exception.Response.GetResponseStream())
+    $content = $reader.ReadToEnd()
+    Write-Error "HTTP $($err.Exception.Response.StatusCode) $($err.Exception.Response.StatusDescription): $content"
+  } else {
+    Write-Error $err
+  }
+  exit 1
+}
