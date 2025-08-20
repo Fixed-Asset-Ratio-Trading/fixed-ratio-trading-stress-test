@@ -5,6 +5,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Normalize BaseUrl: accept numeric port or invalid string and fallback to default
+if ($BaseUrl -notmatch '^https?://') {
+    if ($BaseUrl -match '^[0-9]+$') {
+        $BaseUrl = "http://localhost:$BaseUrl"
+    } else {
+        $BaseUrl = "http://localhost:8080"
+    }
+}
+
 $url = "$BaseUrl/api/jsonrpc"
 $lamports = [ulong]($SolAmount * 1000000000)
 $body = @{ 

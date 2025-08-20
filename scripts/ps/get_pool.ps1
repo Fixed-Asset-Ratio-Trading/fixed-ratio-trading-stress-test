@@ -5,6 +5,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Normalize BaseUrl: accept numeric port or invalid string and fallback to default
+if ($BaseUrl -notmatch '^https?://') {
+    if ($BaseUrl -match '^[0-9]+$') {
+        $BaseUrl = "http://localhost:$BaseUrl"
+    } else {
+        $BaseUrl = "http://localhost:8080"
+    }
+}
+
 if (-not $PoolId) {
     Write-Host "Usage: ./scripts/ps/get_pool.ps1 -BaseUrl http://localhost:8080 -PoolId <POOL_ID>" -ForegroundColor Yellow
     exit 1
