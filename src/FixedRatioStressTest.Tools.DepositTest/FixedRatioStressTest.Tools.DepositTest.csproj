@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\FixedRatioStressTest.Common\FixedRatioStressTest.Common.csproj" />
+    <ProjectReference Include="..\FixedRatioStressTest.Core\FixedRatioStressTest.Core.csproj" />
+    <ProjectReference Include="..\FixedRatioStressTest.Infrastructure\FixedRatioStressTest.Infrastructure.csproj" />
+    <ProjectReference Include="..\Solnet\Solnet.Wallet\Solnet.Wallet.csproj" />
+    <ProjectReference Include="..\Solnet\Solnet.Rpc\Solnet.Rpc.csproj" />
+    <ProjectReference Include="..\Solnet\Solnet.Programs\Solnet.Programs.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.0" />
+  </ItemGroup>
+
+</Project>

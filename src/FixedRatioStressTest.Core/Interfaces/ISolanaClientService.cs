@@ -52,6 +52,7 @@ public interface ISolanaClientService
     Task<bool> ValidatePoolExistsAsync(string poolId);
     Task CleanupInvalidPoolsAsync();
     Task ValidateAndCleanupSavedPoolsAsync();
+    Task<bool> ValidatePoolExistsOnBlockchainAsync(string poolId);
     
     // Core wallet and real blockchain pool management
     Task<CoreWalletConfig> GetOrCreateCoreWalletAsync();
@@ -61,12 +62,18 @@ public interface ISolanaClientService
     Task<List<RealPoolData>> GetRealPoolsAsync();
     Task<StressTestTokenMint> CreateTokenMintAsync(int decimals, string? symbol = null);
     
+    // System/treasury initialization
+    Task InitializeTreasurySystemAsync();
+
     // Deposit operations
     Task<DepositResult> ExecuteDepositAsync(
         Wallet wallet, 
         string poolId, 
         TokenType tokenType, 
         ulong amountInBasisPoints);
+
+    // ATA utilities
+    Task EnsureAtaExistsAsync(Wallet wallet, string mintAddress);
     
     // Withdrawal operations
     Task<WithdrawalResult> ExecuteWithdrawalAsync(

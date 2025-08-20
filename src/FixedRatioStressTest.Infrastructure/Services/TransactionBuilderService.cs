@@ -254,65 +254,98 @@ public class TransactionBuilderService : ITransactionBuilderService
         {
                 _logger.LogDebug("Building deposit transaction for {Amount} basis points", amountInBasisPoints);
                 
-                // Pool state will be passed as parameter to avoid circular dependency
                 var programId = new PublicKey(_config.ProgramId);
-                
-                // Determine token mint based on type
-                var tokenMint = tokenType == TokenType.A ? poolState.TokenAMint : poolState.TokenBMint;
-                var vault = tokenType == TokenType.A ? poolState.VaultA : poolState.VaultB;
+                var systemStatePda = DeriveSystemStatePda();
+
+                // Determine token specific resources
+                var depositTokenMint = tokenType == TokenType.A ? poolState.TokenAMint : poolState.TokenBMint;
+                var otherTokenVault = tokenType == TokenType.A ? poolState.VaultB : poolState.VaultA;
+                var depositVault = tokenType == TokenType.A ? poolState.VaultA : poolState.VaultB;
                 var lpMint = tokenType == TokenType.A ? poolState.LpMintA : poolState.LpMintB;
-                
-                // Get or create associated token accounts
-                var userTokenAccount = await GetOrCreateAssociatedTokenAccountAsync(wallet, tokenMint);
+
+                // Derive user's token accounts (must exist beforehand per API)
+                var userTokenAccount = await GetOrCreateAssociatedTokenAccountAsync(wallet, depositTokenMint);
                 var userLpTokenAccount = await GetOrCreateAssociatedTokenAccountAsync(wallet, lpMint);
                 
-                // Build account structure per API documentation
+                // Verify critical accounts exist on-chain
+                var lpMintInfo = await _rpcClient.GetAccountInfoAsync(new PublicKey(lpMint));
+                if (lpMintInfo.Result?.Value == null)
+                {
+                    throw new InvalidOperationException($"LP mint {lpMint} does not exist on-chain. Pool may not be properly initialized.");
+                }
+                _logger.LogDebug("LP mint {0} verified on-chain", lpMint);
+                
+                var depositVaultInfo = await _rpcClient.GetAccountInfoAsync(new PublicKey(depositVault));
+                if (depositVaultInfo.Result?.Value == null)
+                {
+                    throw new InvalidOperationException($"Deposit vault {depositVault} does not exist on-chain. Pool may not be properly initialized.");
+                }
+                _logger.LogDebug("Deposit vault {0} verified on-chain", depositVault);
+                
+                var otherVaultInfo = await _rpcClient.GetAccountInfoAsync(new PublicKey(otherTokenVault));
+                if (otherVaultInfo.Result?.Value == null)
+                {
+                    throw new InvalidOperationException($"Other vault {otherTokenVault} does not exist on-chain. Pool may not be properly initialized.");
+                }
+                _logger.LogDebug("Other vault {0} verified on-chain", otherTokenVault);
+                
+                // Check user's token balance
+                var userTokenAccountInfo = await _rpcClient.GetTokenAccountBalanceAsync(new PublicKey(userTokenAccount));
+                if (userTokenAccountInfo.Result?.Value?.UiAmount == null || userTokenAccountInfo.Result.Value.UiAmount == 0)
+                {
+                    _logger.LogWarning("User token account {0} has zero balance. Cannot deposit.", userTokenAccount);
+                }
+                else
+                {
+                    _logger.LogDebug("User token account {0} balance: {1}", userTokenAccount, userTokenAccountInfo.Result.Value.UiAmount);
+                }
+
+                // Build account structure exactly as per API
                 var accounts = new List<AccountMeta>
                 {
-                    // [0] User wallet (signer, writable) - pays fees & provides tokens
-                    AccountMeta.Writable(wallet.Account.PublicKey, true),
-                    // [1] System Program
-                    AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),
-                    // [2] SPL Token Program
-                    AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),
-                    // [3] System State PDA
-                    AccountMeta.ReadOnly(DeriveSystemStatePda(), false),
-                    // [4] Pool State PDA
-                    AccountMeta.ReadOnly(new PublicKey(poolState.PoolId), false),
-                    // [5] Deposit token mint (A or B)
-                    AccountMeta.ReadOnly(new PublicKey(tokenMint), false),
-                    // [6] Appropriate vault PDA (writable)
-                    AccountMeta.Writable(new PublicKey(vault), false),
-                    // [7] User's token account
-                    AccountMeta.Writable(new PublicKey(userTokenAccount), false),
-                    // [8] LP mint PDA (writable)
-                    AccountMeta.Writable(new PublicKey(lpMint), false),
-                    // [9] User's LP token account (writable)
-                    AccountMeta.Writable(new PublicKey(userLpTokenAccount), false),
-                    // [10] Main Treasury PDA (writable)
-                    AccountMeta.Writable(new PublicKey(poolState.MainTreasury), false),
-                    // [11] Pool Treasury PDA (writable)
-                    AccountMeta.Writable(new PublicKey(poolState.PoolTreasury), false)
+                    AccountMeta.Writable(wallet.Account.PublicKey, true),                   // [0] User Authority
+                    AccountMeta.ReadOnly(systemStatePda, false),                             // [1] System State PDA
+                    AccountMeta.Writable(new PublicKey(poolState.PoolId), false),           // [2] Pool State PDA
+                    AccountMeta.Writable(new PublicKey(userTokenAccount), false),           // [3] User Token Account
+                    AccountMeta.Writable(new PublicKey(depositVault), false),               // [4] Pool Token Vault
+                    AccountMeta.Writable(new PublicKey(otherTokenVault), false),            // [5] Other Token Vault
+                    AccountMeta.Writable(new PublicKey(lpMint), false),                     // [6] LP Token Mint
+                    AccountMeta.Writable(new PublicKey(userLpTokenAccount), false),         // [7] User LP Account
+                    AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),                 // [8] Token Program
+                    AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),                // [9] System Program
+                    AccountMeta.Writable(new PublicKey(poolState.MainTreasury), false),     // [10] Main Treasury PDA
+                    AccountMeta.ReadOnly(new PublicKey(depositTokenMint), false)            // [11] Deposit Token Mint
                 };
+
+                // Build instruction data per API: [2][deposit_token_mint (32)][amount u64 LE]
+                var data = new byte[41];
+                data[0] = 2; // Deposit discriminator
+                var mintBytes = new PublicKey(depositTokenMint).KeyBytes;
+                Array.Copy(mintBytes, 0, data, 1, 32);
+                var amountBytes = BitConverter.GetBytes(amountInBasisPoints);
+                Array.Copy(amountBytes, 0, data, 33, 8);
                 
-                // Create instruction data
-                var data = new DepositInstructionData
+                _logger.LogDebug("Instruction data: discriminator={0}, mint={1}, amount={2}, total_bytes={3}", 
+                    data[0], depositTokenMint, amountInBasisPoints, data.Length);
+                _logger.LogDebug("Instruction data hex: {0}", Convert.ToHexString(data));
+                
+                // Debug log all accounts
+                for (int i = 0; i < accounts.Count; i++)
                 {
-                    Discriminator = 6, // process_liquidity_deposit
-                    Amount = amountInBasisPoints
-                };
-                
+                    var account = accounts[i];
+                    _logger.LogDebug("Account[{0}]: {1} (writable={2}, signer={3})", 
+                        i, account.PublicKey, account.IsWritable, account.IsSigner);
+                }
+
                 var instruction = new TransactionInstruction
                 {
                     ProgramId = programId,
                     Keys = accounts,
-                    Data = SerializeInstructionData(data)
+                    Data = data
                 };
-                
-                // Get compute units
-                var computeUnits = _computeUnitManager.GetComputeUnits("process_liquidity_deposit");
-                
+
                 // Build transaction
+                var computeUnits = _computeUnitManager.GetComputeUnits("process_liquidity_deposit");
                 var blockHash = await GetRecentBlockHashAsync();
                 var builder = new TransactionBuilder()
                     .SetFeePayer(wallet.Account.PublicKey)
@@ -329,6 +362,19 @@ public class TransactionBuilderService : ITransactionBuilderService
         }
     }
 
+        private async Task<bool> AccountExistsAsync(PublicKey address)
+        {
+            try
+            {
+                var info = await _rpcClient.GetAccountInfoAsync(address);
+                return info.WasRequestSuccessfullyHandled && info.Result?.Value != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public async Task<byte[]> BuildWithdrawalTransactionAsync(
         Wallet wallet, 
         PoolState poolState, 
@@ -339,65 +385,110 @@ public class TransactionBuilderService : ITransactionBuilderService
         {
                 _logger.LogDebug("Building withdrawal transaction for {Amount} LP tokens", lpTokenAmountToBurn);
                 
-                // Pool state will be passed as parameter to avoid circular dependency
                 var programId = new PublicKey(_config.ProgramId);
-                
-                // Determine token mint based on type
-                var tokenMint = tokenType == TokenType.A ? poolState.TokenAMint : poolState.TokenBMint;
-                var vault = tokenType == TokenType.A ? poolState.VaultA : poolState.VaultB;
+                var systemStatePda = DeriveSystemStatePda();
+
+                // Determine token specific resources
+                var withdrawTokenMint = tokenType == TokenType.A ? poolState.TokenAMint : poolState.TokenBMint;
+                var otherTokenVault = tokenType == TokenType.A ? poolState.VaultB : poolState.VaultA;
+                var withdrawVault = tokenType == TokenType.A ? poolState.VaultA : poolState.VaultB;
                 var lpMint = tokenType == TokenType.A ? poolState.LpMintA : poolState.LpMintB;
-                
-                // Get associated token accounts
-                var userTokenAccount = await GetOrCreateAssociatedTokenAccountAsync(wallet, tokenMint);
+
+                // Derive user's token accounts (must exist beforehand per API)
+                var userTokenAccount = await GetOrCreateAssociatedTokenAccountAsync(wallet, withdrawTokenMint);
                 var userLpTokenAccount = await GetOrCreateAssociatedTokenAccountAsync(wallet, lpMint);
                 
-                // Build account structure per API documentation
+                // Verify critical accounts exist on-chain
+                var lpMintInfo = await _rpcClient.GetAccountInfoAsync(new PublicKey(lpMint));
+                if (lpMintInfo.Result?.Value == null)
+                {
+                    throw new InvalidOperationException($"LP mint {lpMint} does not exist on-chain. Pool may not be properly initialized.");
+                }
+                _logger.LogDebug("LP mint {0} verified on-chain", lpMint);
+                
+                var withdrawVaultInfo = await _rpcClient.GetAccountInfoAsync(new PublicKey(withdrawVault));
+                if (withdrawVaultInfo.Result?.Value == null)
+                {
+                    throw new InvalidOperationException($"Withdraw vault {withdrawVault} does not exist on-chain. Pool may not be properly initialized.");
+                }
+                _logger.LogDebug("Withdraw vault {0} verified on-chain", withdrawVault);
+                
+                var otherVaultInfo = await _rpcClient.GetAccountInfoAsync(new PublicKey(otherTokenVault));
+                if (otherVaultInfo.Result?.Value == null)
+                {
+                    throw new InvalidOperationException($"Other vault {otherTokenVault} does not exist on-chain. Pool may not be properly initialized.");
+                }
+                _logger.LogDebug("Other vault {0} verified on-chain", otherTokenVault);
+                
+                // Check user's LP token balance
+                var userLpTokenAccountInfo = await _rpcClient.GetTokenAccountBalanceAsync(new PublicKey(userLpTokenAccount));
+                if (userLpTokenAccountInfo.Result?.Value?.UiAmountString == null || userLpTokenAccountInfo.Result.Value.UiAmountString == "0")
+                {
+                    _logger.LogWarning("User LP token account {0} has zero balance. Cannot withdraw.", userLpTokenAccount);
+                }
+                else
+                {
+                    _logger.LogDebug("User LP token account {0} balance: {1}", userLpTokenAccount, userLpTokenAccountInfo.Result.Value.UiAmountString);
+                }
+
+                // Build account structure exactly as per API (same as deposit but for withdrawal)
                 var accounts = new List<AccountMeta>
                 {
-                    // [0] User wallet (signer, writable) - pays fees & burns LP tokens
+                    // [0] User Authority (Signer, Writable) - LP token holder
                     AccountMeta.Writable(wallet.Account.PublicKey, true),
-                    // [1] System Program
-                    AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),
-                    // [2] SPL Token Program
-                    AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),
-                    // [3] System State PDA
-                    AccountMeta.ReadOnly(DeriveSystemStatePda(), false),
-                    // [4] Pool State PDA (writable)
+                    // [1] System State PDA (Readable) - Pause validation
+                    AccountMeta.ReadOnly(systemStatePda, false),
+                    // [2] Pool State PDA (Writable) - Pool to withdraw from
                     AccountMeta.Writable(new PublicKey(poolState.PoolId), false),
-                    // [5] Withdrawal token mint (A or B)
-                    AccountMeta.ReadOnly(new PublicKey(tokenMint), false),
-                    // [6] Appropriate vault PDA (writable)
-                    AccountMeta.Writable(new PublicKey(vault), false),
-                    // [7] User's token account (writable)
+                    // [3] User Token Account (Writable) - Destination for withdrawn tokens
                     AccountMeta.Writable(new PublicKey(userTokenAccount), false),
-                    // [8] LP mint PDA (writable)
+                    // [4] Pool Token Vault (Writable) - Source vault
+                    AccountMeta.Writable(new PublicKey(withdrawVault), false),
+                    // [5] Other Token Vault (Writable) - Paired token vault
+                    AccountMeta.Writable(new PublicKey(otherTokenVault), false),
+                    // [6] LP Token Mint (Writable) - LP mint to burn from
                     AccountMeta.Writable(new PublicKey(lpMint), false),
-                    // [9] User's LP token account (writable)
+                    // [7] User LP Account (Writable) - Source of LP tokens to burn
                     AccountMeta.Writable(new PublicKey(userLpTokenAccount), false),
-                    // [10] Main Treasury PDA (writable)
+                    // [8] Token Program (Readable) - SPL token program
+                    AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),
+                    // [9] System Program (Readable) - For fee transfer
+                    AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),
+                    // [10] Main Treasury PDA (Writable) - Fee destination
                     AccountMeta.Writable(new PublicKey(poolState.MainTreasury), false),
-                    // [11] Pool Treasury PDA (writable)
-                    AccountMeta.Writable(new PublicKey(poolState.PoolTreasury), false)
+                    // [11] Withdraw Token Mint (Readable) - Token being withdrawn
+                    AccountMeta.ReadOnly(new PublicKey(withdrawTokenMint), false)
                 };
+
+                // Build instruction data per API: [3][withdraw_token_mint (32)][lp_amount_to_burn u64 LE]
+                var data = new byte[41];
+                data[0] = 3; // Withdraw discriminator
+                var mintBytes = new PublicKey(withdrawTokenMint).KeyBytes;
+                Array.Copy(mintBytes, 0, data, 1, 32);
+                var amountBytes = BitConverter.GetBytes(lpTokenAmountToBurn);
+                Array.Copy(amountBytes, 0, data, 33, 8);
                 
-                // Create instruction data
-                var data = new WithdrawalInstructionData
+                _logger.LogDebug("Withdrawal instruction data: discriminator={0}, mint={1}, lp_amount={2}, total_bytes={3}", 
+                    data[0], withdrawTokenMint, lpTokenAmountToBurn, data.Length);
+                _logger.LogDebug("Withdrawal instruction data hex: {0}", Convert.ToHexString(data));
+                
+                // Debug log all accounts
+                for (int i = 0; i < accounts.Count; i++)
                 {
-                    Discriminator = 7, // process_liquidity_withdraw
-                    Amount = lpTokenAmountToBurn
-                };
-                
+                    var account = accounts[i];
+                    _logger.LogDebug("Withdrawal Account[{0}]: {1} (writable={2}, signer={3})", 
+                        i, account.PublicKey, account.IsWritable, account.IsSigner);
+                }
+
                 var instruction = new TransactionInstruction
                 {
                     ProgramId = programId,
                     Keys = accounts,
-                    Data = SerializeInstructionData(data)
+                    Data = data
                 };
-                
-                // Get compute units
-                var computeUnits = _computeUnitManager.GetComputeUnits("process_liquidity_withdraw");
-                
+
                 // Build transaction
+                var computeUnits = _computeUnitManager.GetComputeUnits("process_liquidity_withdraw");
                 var blockHash = await GetRecentBlockHashAsync();
                 var builder = new TransactionBuilder()
                     .SetFeePayer(wallet.Account.PublicKey)

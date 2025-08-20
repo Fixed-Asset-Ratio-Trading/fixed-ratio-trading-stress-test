@@ -1549,6 +1549,26 @@ public async Task CleanupInvalidPoolsAsync()
             }
         }
 
+        public async Task EnsureAtaExistsAsync(Wallet wallet, string mintAddress)
+        {
+            var ata = await _transactionBuilder.GetOrCreateAssociatedTokenAccountAsync(wallet, mintAddress);
+            var info = await _rpcClient.GetAccountInfoAsync(ata);
+            if (info.Result?.Value == null)
+            {
+                var blockHash = await _rpcClient.GetLatestBlockHashAsync();
+                var tx = new TransactionBuilder()
+                    .SetFeePayer(wallet.Account.PublicKey)
+                    .SetRecentBlockHash(blockHash.Result.Value.Blockhash)
+                    .AddInstruction(AssociatedTokenAccountProgram.CreateAssociatedTokenAccount(
+                        wallet.Account.PublicKey,
+                        wallet.Account.PublicKey,
+                        new PublicKey(mintAddress)))
+                    .Build(wallet.Account);
+                var sig = await SendTransactionAsync(tx);
+                await ConfirmTransactionAsync(sig);
+            }
+        }
+
         // PDA derivation
         public string DerivePoolStatePda(string poolId)
         {

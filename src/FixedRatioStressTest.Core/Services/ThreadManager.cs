@@ -111,6 +111,12 @@ public class ThreadManager : IThreadManager
             
             _logger.LogDebug("Restored wallet for thread {ThreadId}: {PublicKey}, SOL balance: {Balance} lamports", 
                 threadId, config.PublicKey, solBalance);
+                
+            // Phase 4: Initial token funding for deposit threads
+            if (config.ThreadType == ThreadType.Deposit && config.InitialAmount > 0)
+            {
+                await FundDepositThreadInitially(config, wallet);
+            }
         }
 
         var cancellationToken = new CancellationTokenSource();
@@ -261,32 +267,111 @@ public class ThreadManager : IThreadManager
         _logger.LogDebug("Worker thread {ThreadId} completed", config.ThreadId);
     }
 
+    private async Task FundDepositThreadInitially(ThreadConfig config, Wallet wallet)
+    {
+        try
+        {
+            _logger.LogDebug("Providing initial funding for deposit thread {ThreadId}: {Amount} basis points", 
+                config.ThreadId, config.InitialAmount);
+
+            // Get pool state to determine token mint
+            var pool = await _solanaClient.GetPoolStateAsync(config.PoolId);
+            var tokenMint = config.TokenType == TokenType.A ? pool.TokenAMint : pool.TokenBMint;
+
+            // Mint initial tokens to the thread's wallet
+            await _solanaClient.MintTokensAsync(tokenMint, wallet.Account.PublicKey.Key, config.InitialAmount);
+            
+            _logger.LogInformation("Successfully funded deposit thread {ThreadId} with {Amount} tokens of type {TokenType}", 
+                config.ThreadId, config.InitialAmount, config.TokenType);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to provide initial funding for deposit thread {ThreadId}", config.ThreadId);
+            // Don't throw - let the thread start and wait for token sharing instead
+        }
+    }
+
+    private async Task CheckAndExecuteAutoRefill(ThreadConfig config, Wallet wallet, string tokenMint)
+    {
+        try
+        {
+            // Only auto-refill if enabled and initial amount was set
+            if (!config.AutoRefill || config.InitialAmount == 0)
+                return;
+
+            var currentBalance = await _solanaClient.GetTokenBalanceAsync(wallet.Account.PublicKey.Key, tokenMint);
+            var threshold = config.InitialAmount * 5 / 100; // 5% of initial amount
+
+            if (currentBalance < threshold)
+            {
+                _logger.LogDebug("Auto-refill triggered for thread {ThreadId}: balance {Current} < threshold {Threshold}", 
+                    config.ThreadId, currentBalance, threshold);
+
+                // Mint full initial amount again (not just the deficit)
+                await _solanaClient.MintTokensAsync(tokenMint, wallet.Account.PublicKey.Key, config.InitialAmount);
+                
+                _logger.LogInformation("Auto-refilled deposit thread {ThreadId} with {Amount} tokens", 
+                    config.ThreadId, config.InitialAmount);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to execute auto-refill for deposit thread {ThreadId}", config.ThreadId);
+            // Don't throw - let the thread continue with current balance
+        }
+    }
+
     private async Task<(string operationType, bool success, ulong volume)> HandleDepositOperation(
         ThreadConfig config, Wallet wallet, Random random)
     {
         try
         {
-            // Phase 3: Implement deposit logic
             _logger.LogDebug("Executing deposit operation for thread {ThreadId}", config.ThreadId);
 
-            // Check token balance first
+            // Check SOL balance for transaction fees
             var solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
             if (solBalance < 1000000) // Less than 0.001 SOL for fees
             {
-                _logger.LogWarning("Insufficient SOL balance for deposit operation in thread {ThreadId}", config.ThreadId);
-                return ("deposit_insufficient_balance", false, 0);
+                _logger.LogWarning("Insufficient SOL balance for fees in thread {ThreadId}", config.ThreadId);
+                return ("deposit_insufficient_sol", false, 0);
             }
 
-            // Calculate random deposit amount (1 basis point to 5% of balance as per design)
-            var depositAmount = (ulong)random.Next(1000, Math.Max(1001, (int)(solBalance * 0.05)));
+            // Get pool state and determine token mint
+            var pool = await _solanaClient.GetPoolStateAsync(config.PoolId);
+            var tokenMint = config.TokenType == TokenType.A ? pool.TokenAMint : pool.TokenBMint;
+            
+            // Check for auto-refill before checking balance
+            await CheckAndExecuteAutoRefill(config, wallet, tokenMint);
+            
+            // Check actual token balance for deposit
+            var tokenBalance = await _solanaClient.GetTokenBalanceAsync(wallet.Account.PublicKey.Key, tokenMint);
+            if (tokenBalance == 0)
+            {
+                _logger.LogDebug("No tokens available for deposit in thread {ThreadId}, waiting...", config.ThreadId);
+                return ("deposit_waiting", false, 0);
+            }
+
+            // Calculate random deposit amount (1 basis point to 5% of token balance)
+            ulong maxPortion = (ulong)Math.Max(1001, (long)(tokenBalance * 5 / 100));
+            var upper = (int)Math.Min(int.MaxValue, maxPortion);
+            var depositAmount = (ulong)random.Next(1000, Math.Max(1001, upper));
+            
+            // Ensure we don't try to deposit more than available
+            depositAmount = Math.Min(depositAmount, tokenBalance);
             
             // Submit deposit transaction
             var result = await _solanaClient.ExecuteDepositAsync(
                 wallet, config.PoolId, config.TokenType, depositAmount);
             var signature = result.TransactionSignature;
 
-            _logger.LogDebug("Deposit completed for thread {ThreadId}: {Amount} lamports, signature: {Signature}", 
+            _logger.LogDebug("Deposit completed for thread {ThreadId}: {Amount} tokens, signature: {Signature}", 
                 config.ThreadId, depositAmount, signature);
+
+            // Share LP tokens with withdrawal threads if sharing is enabled
+            if (config.ShareTokens && result.LpTokensReceived > 0)
+            {
+                await ShareLpTokensWithWithdrawalThreads(config, wallet, result.LpTokensReceived);
+            }
 
             return ("deposit", true, depositAmount);
         }
@@ -302,11 +387,21 @@ public class ThreadManager : IThreadManager
     {
         try
         {
-            // Real withdrawal logic - check actual LP token balance
             _logger.LogDebug("Executing withdrawal operation for thread {ThreadId}", config.ThreadId);
 
+            // Check SOL balance for transaction fees
+            var solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
+            if (solBalance < 1000000) // Less than 0.001 SOL for fees
+            {
+                _logger.LogWarning("Insufficient SOL balance for fees in thread {ThreadId}", config.ThreadId);
+                return ("withdrawal_insufficient_sol", false, 0);
+            }
+
+            // Get pool state and determine LP mint
             var pool = await _solanaClient.GetPoolStateAsync(config.PoolId);
             var lpMint = config.TokenType == TokenType.A ? pool.LpMintA : pool.LpMintB;
+            
+            // Check actual LP token balance for withdrawal
             var lpBalance = await _solanaClient.GetTokenBalanceAsync(wallet.Account.PublicKey.Key, lpMint);
             if (lpBalance == 0)
             {
@@ -314,10 +409,13 @@ public class ThreadManager : IThreadManager
                 return ("withdrawal_waiting", false, 0);
             }
 
-            // Withdraw between 1 basis point and 5% of current LP balance
+            // Calculate random withdrawal amount (1 basis point to 5% of LP balance)
             ulong maxPortion = (ulong)Math.Max(1001, (long)(lpBalance * 5 / 100));
             var upper = (int)Math.Min(int.MaxValue, maxPortion);
             var lpTokenAmount = (ulong)random.Next(1000, Math.Max(1001, upper));
+            
+            // Ensure we don't try to withdraw more than available
+            lpTokenAmount = Math.Min(lpTokenAmount, lpBalance);
             
             // Submit withdrawal transaction
             var result = await _solanaClient.ExecuteWithdrawalAsync(
@@ -326,6 +424,12 @@ public class ThreadManager : IThreadManager
 
             _logger.LogDebug("Withdrawal completed for thread {ThreadId}: {Amount} LP tokens, signature: {Signature}", 
                 config.ThreadId, lpTokenAmount, signature);
+
+            // Share withdrawn tokens with deposit threads if sharing is enabled
+            if (config.ShareTokens && result.TokensWithdrawn > 0)
+            {
+                await ShareTokensWithDepositThreads(config, wallet, result.TokensWithdrawn);
+            }
 
             return ("withdrawal", true, lpTokenAmount);
         }
@@ -370,6 +474,126 @@ public class ThreadManager : IThreadManager
         {
             _logger.LogWarning(ex, "Swap operation failed for thread {ThreadId}", config.ThreadId);
             return ("swap_failed", false, 0);
+        }
+    }
+
+    private async Task ShareLpTokensWithWithdrawalThreads(ThreadConfig sourceConfig, Wallet sourceWallet, ulong lpTokensToShare)
+    {
+        try
+        {
+            // Find active withdrawal threads for the same pool and token type
+            var allThreads = await _storageService.LoadAllThreadsAsync();
+            var eligibleThreads = allThreads.Where(t => 
+                t.ThreadType == ThreadType.Withdrawal &&
+                t.PoolId == sourceConfig.PoolId &&
+                t.TokenType == sourceConfig.TokenType &&
+                t.Status == ThreadStatus.Running &&
+                t.ThreadId != sourceConfig.ThreadId).ToList();
+
+            if (!eligibleThreads.Any())
+            {
+                _logger.LogDebug("No eligible withdrawal threads found for LP token sharing from {ThreadId}", sourceConfig.ThreadId);
+                return;
+            }
+
+            // Calculate equal share for each thread
+            var sharePerThread = lpTokensToShare / (ulong)eligibleThreads.Count;
+            if (sharePerThread == 0)
+            {
+                _logger.LogDebug("LP token amount too small to share among {Count} withdrawal threads", eligibleThreads.Count);
+                return;
+            }
+
+            // Get pool state to determine LP mint
+            var pool = await _solanaClient.GetPoolStateAsync(sourceConfig.PoolId);
+            var lpMint = sourceConfig.TokenType == TokenType.A ? pool.LpMintA : pool.LpMintB;
+
+            // Transfer LP tokens to each eligible withdrawal thread
+            foreach (var targetThread in eligibleThreads)
+            {
+                try
+                {
+                    if (targetThread.PublicKey != null)
+                    {
+                        await _solanaClient.TransferTokensAsync(
+                            sourceWallet, targetThread.PublicKey, lpMint, sharePerThread);
+                        
+                        _logger.LogDebug("Shared {Amount} LP tokens from deposit thread {Source} to withdrawal thread {Target}", 
+                            sharePerThread, sourceConfig.ThreadId, targetThread.ThreadId);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to share LP tokens with withdrawal thread {ThreadId}", targetThread.ThreadId);
+                }
+            }
+
+            _logger.LogInformation("Shared {Total} LP tokens among {Count} withdrawal threads from deposit thread {ThreadId}", 
+                lpTokensToShare, eligibleThreads.Count, sourceConfig.ThreadId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to share LP tokens from deposit thread {ThreadId}", sourceConfig.ThreadId);
+        }
+    }
+
+    private async Task ShareTokensWithDepositThreads(ThreadConfig sourceConfig, Wallet sourceWallet, ulong tokensToShare)
+    {
+        try
+        {
+            // Find active deposit threads for the same pool and token type
+            var allThreads = await _storageService.LoadAllThreadsAsync();
+            var eligibleThreads = allThreads.Where(t => 
+                t.ThreadType == ThreadType.Deposit &&
+                t.PoolId == sourceConfig.PoolId &&
+                t.TokenType == sourceConfig.TokenType &&
+                t.Status == ThreadStatus.Running &&
+                t.ThreadId != sourceConfig.ThreadId).ToList();
+
+            if (!eligibleThreads.Any())
+            {
+                _logger.LogDebug("No eligible deposit threads found for token sharing from {ThreadId}", sourceConfig.ThreadId);
+                return;
+            }
+
+            // Calculate equal share for each thread
+            var sharePerThread = tokensToShare / (ulong)eligibleThreads.Count;
+            if (sharePerThread == 0)
+            {
+                _logger.LogDebug("Token amount too small to share among {Count} deposit threads", eligibleThreads.Count);
+                return;
+            }
+
+            // Get pool state to determine token mint
+            var pool = await _solanaClient.GetPoolStateAsync(sourceConfig.PoolId);
+            var tokenMint = sourceConfig.TokenType == TokenType.A ? pool.TokenAMint : pool.TokenBMint;
+
+            // Transfer tokens to each eligible deposit thread
+            foreach (var targetThread in eligibleThreads)
+            {
+                try
+                {
+                    if (targetThread.PublicKey != null)
+                    {
+                        await _solanaClient.TransferTokensAsync(
+                            sourceWallet, targetThread.PublicKey, tokenMint, sharePerThread);
+                        
+                        _logger.LogDebug("Shared {Amount} tokens from withdrawal thread {Source} to deposit thread {Target}", 
+                            sharePerThread, sourceConfig.ThreadId, targetThread.ThreadId);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to share tokens with deposit thread {ThreadId}", targetThread.ThreadId);
+                }
+            }
+
+            _logger.LogInformation("Shared {Total} tokens among {Count} deposit threads from withdrawal thread {ThreadId}", 
+                tokensToShare, eligibleThreads.Count, sourceConfig.ThreadId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to share tokens from withdrawal thread {ThreadId}", sourceConfig.ThreadId);
         }
     }
 }
