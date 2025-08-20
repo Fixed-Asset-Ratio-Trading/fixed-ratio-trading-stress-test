@@ -56,6 +56,22 @@ public sealed class InProcessApiHost
 		builder.Logging.AddConfiguration(_configuration.GetSection("Logging"));
 		builder.Logging.AddProvider(_guiLoggerProvider);
 
+		// TEMP (dev): Force storage to use repo root .\\data regardless of working dir
+		// NOTE: This override will be removed for production.
+		try
+		{
+			var rootData = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../data"));
+			if (!Directory.Exists(rootData))
+			{
+				rootData = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "data"));
+			}
+			builder.Configuration.AddInMemoryCollection(new Dictionary<string, string>
+			{
+				["Storage:DataDirectory"] = rootData
+			});
+		}
+		catch { }
+
 		var httpPort = _configuration.GetValue<int>("NetworkConfiguration:HttpPort", 8080);
 		builder.WebHost.ConfigureKestrel(options =>
 		{

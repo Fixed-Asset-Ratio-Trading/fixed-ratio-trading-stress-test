@@ -25,6 +25,22 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
 
+// TEMP (dev): Force storage to use repo root .\\data regardless of working dir
+// NOTE: This override will be removed for production.
+try
+{
+    var rootData = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../data"));
+    if (!Directory.Exists(rootData))
+    {
+        rootData = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "data"));
+    }
+    builder.Configuration.AddInMemoryCollection(new Dictionary<string, string>
+    {
+        ["Storage:DataDirectory"] = rootData
+    });
+}
+catch { }
+
 // Add Windows Service logger provider (Event Log + File + UDP)
 builder.Logging.AddWindowsServiceLogger(options =>
 {

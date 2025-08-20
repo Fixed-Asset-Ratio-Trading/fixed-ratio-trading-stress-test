@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System;
 using FixedRatioStressTest.Common.Models;
 using FixedRatioStressTest.Core.Interfaces;
 using Microsoft.Extensions.Configuration;
@@ -17,6 +18,18 @@ public class JsonFileStorageService : IStorageService
     {
         _dataDirectory = configuration.GetValue<string>("Storage:DataDirectory")
                         ?? Path.Combine(Environment.CurrentDirectory, "data");
+
+        // TEMP: Hard-code root-level data directory to stabilize state across hosts
+        // NOTE: This override is for development only and will be removed for production.
+        try
+        {
+            var repoRootData = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../data"));
+            if (Directory.Exists(repoRootData))
+            {
+                _dataDirectory = repoRootData;
+            }
+        }
+        catch { }
         _logger = logger;
         _fileLock = new SemaphoreSlim(1, 1);
 
