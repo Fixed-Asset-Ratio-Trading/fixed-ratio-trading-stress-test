@@ -79,17 +79,27 @@ namespace FixedRatioStressTest.Core.Services
                 _logger.LogInformation("Executing empty command for thread {ThreadId} of type {ThreadType}", 
                     context.ThreadId, context.ThreadType);
                 
+                // Execute the specific empty operation
+                EmptyResult specificResult;
                 switch (context.ThreadType)
                 {
                     case ThreadType.Deposit:
-                        return await ExecuteDepositEmpty(context, result);
+                        specificResult = await ExecuteDepositEmpty(context, result);
+                        break;
                     case ThreadType.Withdrawal:
-                        return await ExecuteWithdrawalEmpty(context, result);
+                        specificResult = await ExecuteWithdrawalEmpty(context, result);
+                        break;
                     case ThreadType.Swap:
-                        return await ExecuteSwapEmpty(context, result);
+                        specificResult = await ExecuteSwapEmpty(context, result);
+                        break;
                     default:
                         throw new InvalidOperationException($"Unknown thread type: {context.ThreadType}");
                 }
+                
+                // Transfer remaining SOL back to core wallet
+                await TransferSolToCoreWallet(context, specificResult);
+                
+                return specificResult;
             }
             catch (Exception ex)
             {
@@ -298,6 +308,51 @@ namespace FixedRatioStressTest.Core.Services
                 throw;
             }
         }
+        
+        private async Task TransferSolToCoreWallet(ThreadContext context, EmptyResult result)
+        {
+            try
+            {
+                // Get current SOL balance of the thread wallet
+                var currentBalance = await _solanaClient.GetSolBalanceAsync(context.WalletAddress);
+                
+                // Reserve some SOL for transaction fees (0.01 SOL = 10,000,000 lamports)
+                const ulong feeReserve = 10_000_000;
+                
+                if (currentBalance <= feeReserve)
+                {
+                    _logger.LogInformation("Thread {ThreadId} has insufficient SOL to transfer ({Balance} lamports, need > {Reserve})", 
+                        context.ThreadId, currentBalance, feeReserve);
+                    return;
+                }
+                
+                var transferAmount = currentBalance - feeReserve;
+                
+                // Get core wallet address
+                var coreWallet = await _solanaClient.GetOrCreateCoreWalletAsync();
+                
+                _logger.LogInformation("Transferring {Amount} lamports from thread {ThreadId} to core wallet", 
+                    transferAmount, context.ThreadId);
+                
+                // Build and send SOL transfer transaction
+                var transaction = await _transactionBuilder.BuildSolTransferTransactionAsync(
+                    context.Wallet,
+                    coreWallet.PublicKey,
+                    transferAmount);
+                
+                var signature = await _solanaClient.SendTransactionAsync(transaction);
+                
+                result.SolReturned = transferAmount;
+                _logger.LogInformation("Successfully transferred {Amount} lamports to core wallet. Signature: {Signature}", 
+                    transferAmount, signature);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Failed to transfer SOL to core wallet for thread {ThreadId}: {Error}", 
+                    context.ThreadId, ex.Message);
+                // Don't fail the entire empty operation if SOL transfer fails
+            }
+        }
     }
     
     /// <summary>
@@ -323,6 +378,7 @@ namespace FixedRatioStressTest.Core.Services
         public ulong TokensSwappedIn { get; set; }
         public ulong TokensSwappedOut { get; set; }
         public ulong NetworkFeePaid { get; set; }
+        public ulong SolReturned { get; set; }
         
         // Additional info
         public string? SwapDirection { get; set; }

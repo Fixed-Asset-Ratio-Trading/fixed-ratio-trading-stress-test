@@ -43,6 +43,7 @@ public class JsonRpcController : ControllerBase
                 "stop_thread" => await StopThreadById(request),
                 "delete_thread" => await DeleteThreadById(request),
                 "get_thread" => await GetThreadById(request),
+                "get_thread_stats" => await GetThreadStats(request),
                 "list_threads" => await ListThreads(request),
                 "stop_all_pool_threads" => await StopAllPoolThreads(request),
                 "empty_thread" => await EmptyThread(request),
@@ -237,6 +238,20 @@ public class JsonRpcController : ControllerBase
         {
             return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "thread_id is required" }, Id = request.Id });
         }
+        
+        // Automatically empty the thread before deletion
+        try
+        {
+            var emptyResult = await _emptyHandler.ExecuteEmptyCommandAsync(id);
+            _logger.LogInformation("Thread {ThreadId} emptied before deletion. SOL returned: {SolReturned}", 
+                id, emptyResult.SolReturned);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Failed to empty thread {ThreadId} before deletion: {Error}", id, ex.Message);
+            // Continue with deletion even if empty fails
+        }
+        
         await _threadManager.DeleteThreadAsync(id);
         return Ok(new JsonRpcResponse<object> { Result = new { threadId = id, status = "deleted" }, Id = request.Id });
     }
@@ -253,10 +268,113 @@ public class JsonRpcController : ControllerBase
         return Ok(new JsonRpcResponse<object> { Result = new { config = cfg, statistics = stats }, Id = request.Id });
     }
 
+    private async Task<ActionResult<object>> GetThreadStats(JsonRpcRequest request)
+    {
+        var id = ExtractThreadId(request.Params);
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return Ok(new JsonRpcResponse<object> { Error = new JsonRpcError { Code = -32602, Message = "thread_id is required" }, Id = request.Id });
+        }
+        var stats = await _threadManager.GetThreadStatisticsAsync(id);
+        return Ok(new JsonRpcResponse<object> { Result = stats, Id = request.Id });
+    }
+
     private async Task<ActionResult<object>> ListThreads(JsonRpcRequest request)
     {
-        var list = await _threadManager.GetAllThreadsAsync();
-        return Ok(new JsonRpcResponse<object> { Result = new { threads = list }, Id = request.Id });
+        try
+        {
+            // Parse optional filters from request params
+            string? poolIdFilter = null;
+            ThreadType? threadTypeFilter = null;
+            
+            if (request.Params is System.Text.Json.JsonElement el && el.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                // Optional pool_id filter
+                if (el.TryGetProperty("pool_id", out var poolEl) && poolEl.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    poolIdFilter = poolEl.GetString();
+                }
+                
+                // Optional thread_type filter (deposit, withdrawal, swap)
+                if (el.TryGetProperty("thread_type", out var typeEl) && typeEl.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    var typeStr = typeEl.GetString();
+                    if (Enum.TryParse<ThreadType>(typeStr, true, out var parsedType))
+                    {
+                        threadTypeFilter = parsedType;
+                    }
+                }
+            }
+            
+            // Get all threads and apply filters
+            var allThreads = await _threadManager.GetAllThreadsAsync();
+            var filteredThreads = allThreads.AsEnumerable();
+            
+            if (!string.IsNullOrWhiteSpace(poolIdFilter))
+            {
+                filteredThreads = filteredThreads.Where(t => t.PoolId.Equals(poolIdFilter, StringComparison.OrdinalIgnoreCase));
+            }
+            
+            if (threadTypeFilter.HasValue)
+            {
+                filteredThreads = filteredThreads.Where(t => t.ThreadType == threadTypeFilter.Value);
+            }
+            
+            // Transform threads to include enhanced display information
+            var enhancedThreads = filteredThreads.Select(thread => new
+            {
+                thread_id = thread.ThreadId,
+                thread_type = thread.ThreadType.ToString().ToLowerInvariant(),
+                pool_id = thread.PoolId,
+                token_type = thread.TokenType.ToString(), // A or B
+                token_info = GetTokenDisplayInfo(thread),
+                swap_direction = thread.SwapDirection?.ToString(),
+                status = thread.Status.ToString().ToLowerInvariant(),
+                initial_amount = thread.InitialAmount,
+                auto_refill = thread.AutoRefill,
+                share_tokens = thread.ShareTokens,
+                created_at = thread.CreatedAt,
+                last_operation_at = thread.LastOperationAt,
+                public_key = thread.PublicKey
+            }).ToList();
+            
+            return Ok(new JsonRpcResponse<object> 
+            { 
+                Result = new 
+                { 
+                    threads = enhancedThreads,
+                    total_count = enhancedThreads.Count,
+                    filters_applied = new
+                    {
+                        pool_id = poolIdFilter,
+                        thread_type = threadTypeFilter?.ToString().ToLowerInvariant()
+                    }
+                }, 
+                Id = request.Id 
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error listing threads");
+            return Ok(new JsonRpcResponse<object> 
+            { 
+                Error = new JsonRpcError { Code = -32603, Message = $"Internal error: {ex.Message}" }, 
+                Id = request.Id 
+            });
+        }
+    }
+    
+    private string GetTokenDisplayInfo(ThreadConfig thread)
+    {
+        return thread.ThreadType switch
+        {
+            ThreadType.Deposit => $"Depositing Token {thread.TokenType} → LP Token {thread.TokenType}",
+            ThreadType.Withdrawal => $"Withdrawing LP Token {thread.TokenType} → Token {thread.TokenType}",
+            ThreadType.Swap when thread.SwapDirection == SwapDirection.AToB => "Swapping Token A → Token B",
+            ThreadType.Swap when thread.SwapDirection == SwapDirection.BToA => "Swapping Token B → Token A",
+            ThreadType.Swap => $"Swapping (direction: {thread.SwapDirection})",
+            _ => $"Operating on Token {thread.TokenType}"
+        };
     }
 
     private async Task<ActionResult<object>> StopAllPoolThreads(JsonRpcRequest request)
@@ -302,6 +420,7 @@ public class JsonRpcController : ControllerBase
                         tokens_swapped_in = result.TokensSwappedIn,
                         tokens_swapped_out = result.TokensSwappedOut,
                         tokens_burned = result.TokensBurned,
+                        sol_returned = result.SolReturned,
                         operation_successful = result.OperationSuccessful,
                         error_message = result.ErrorMessage,
                         transaction_signature = result.TransactionSignature,
