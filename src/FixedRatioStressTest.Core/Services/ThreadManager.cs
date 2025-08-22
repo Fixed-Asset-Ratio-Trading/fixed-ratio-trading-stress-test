@@ -588,7 +588,20 @@ public class ThreadManager : IThreadManager
             var inputMint = swapDirection == SwapDirection.AToB ? pool.TokenAMint : pool.TokenBMint;
             var outputMint = swapDirection == SwapDirection.AToB ? pool.TokenBMint : pool.TokenAMint;
             
-            // Ensure ATAs exist for both input and output tokens
+            // CRITICAL: Check token balance BEFORE creating ATAs to avoid unnecessary blockchain calls
+            var inputBalance = await _solanaClient.GetTokenBalanceAsync(wallet.Account.PublicKey.Key, inputMint);
+            
+            _logger.LogDebug("🔍 EARLY TOKEN CHECK - Thread {ThreadId}: inputBalance={Balance}, initialAmount={InitialAmount}, autoRefill={AutoRefill}", 
+                config.ThreadId, inputBalance, config.InitialAmount, config.AutoRefill);
+            
+            // If no balance and no initial funding, return immediately without any blockchain operations
+            if (inputBalance == 0 && config.InitialAmount == 0)
+            {
+                _logger.LogInformation("⏳ Swap thread {ThreadId} without initial funding has no tokens, waiting for token sharing...", config.ThreadId);
+                return ("swap_waiting", true, 0);
+            }
+            
+            // Only create ATAs if we have tokens or will get tokens
             await _solanaClient.EnsureAtaExistsAsync(wallet, inputMint);
             await _solanaClient.EnsureAtaExistsAsync(wallet, outputMint);
             
