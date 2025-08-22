@@ -222,61 +222,18 @@ namespace FixedRatioStressTest.Core.Services
         
         private async Task<EmptyResult> ExecuteSwapEmpty(ThreadContext context, EmptyResult result)
         {
-            // Get current input token balance
-            var pool = await _solanaClient.GetPoolStateAsync(context.PoolId);
-            var swapDirection = context.SwapDirection ?? SwapDirection.AToB;
-            var inputMint = swapDirection == SwapDirection.AToB ? pool.TokenAMint : pool.TokenBMint;
-            var outputMint = swapDirection == SwapDirection.AToB ? pool.TokenBMint : pool.TokenAMint;
+            // For swap threads, simply ignore all tokens and only transfer SOL back to core
+            // No smart contract interaction needed - just cleanup and delete
             
-            var inputBalance = await _solanaClient.GetTokenBalanceAsync(context.WalletAddress, inputMint);
-            result.TokensSwappedIn = inputBalance;
-            result.SwapDirection = swapDirection.ToString();
+            _logger.LogInformation("Emptying swap thread {ThreadId} - ignoring all tokens, only transferring SOL to core wallet", context.ThreadId);
             
-            if (inputBalance == 0)
-            {
-                result.ErrorMessage = "No input tokens available";
-                _logger.LogInformation("No tokens to empty for swap thread {ThreadId}", context.ThreadId);
-                return result;
-            }
-            
-            _logger.LogInformation("Emptying {Amount} input tokens from swap thread {ThreadId} direction {Direction}", 
-                inputBalance, context.ThreadId, swapDirection);
-            
-            // Burn input tokens first (guaranteed removal)
-            await BurnTokens(context, inputMint, inputBalance);
-            result.TokensBurned = inputBalance;
-            
-            try
-            {
-                // Calculate expected output
-                var swapCalc = SwapCalculation.Calculate(pool, swapDirection, inputBalance);
-                
-                // Attempt swap operation (Fixed Ratio Trading requires exact output)
-                var swapResult = await _solanaClient.ExecuteSwapAsync(
-                    context.Wallet,
-                    context.PoolId,
-                    swapDirection,
-                    inputBalance,
-                    swapCalc.OutputAmount); // Exact output required, no slippage
-                
-                result.TokensSwappedOut = swapResult.OutputTokens;
-                result.TransactionSignature = swapResult.TransactionSignature;
-                result.NetworkFeePaid = swapResult.NetworkFeePaid;
-                result.OperationSuccessful = true;
-                
-                // Burn output tokens
-                await BurnTokens(context, outputMint, swapResult.OutputTokens);
-                result.TokensBurned += swapResult.OutputTokens; // Total burned = input + output
-                
-                _logger.LogInformation("Successfully emptied swap thread {ThreadId}: burned {InputBurned} input and {OutputBurned} output tokens",
-                    context.ThreadId, inputBalance, swapResult.OutputTokens);
-            }
-            catch (Exception ex)
-            {
-                // Operation failed but input tokens already burned
-                result.ErrorMessage = $"Swap failed: {ex.Message}";
-                _logger.LogWarning("Swap operation failed for empty command, but input tokens were burned: {Error}", ex.Message);
-            }
+            // Set basic result info without any token operations
+            result.SwapDirection = (context.SwapDirection ?? SwapDirection.AToB).ToString();
+            result.TokensSwappedIn = 0;
+            result.TokensSwappedOut = 0;
+            result.TokensBurned = 0;
+            result.OperationSuccessful = true;
+            result.ErrorMessage = "All tokens ignored, only SOL transferred to core wallet";
             
             return result;
         }
