@@ -177,8 +177,16 @@ public class ThreadManager : IThreadManager
 
     public async Task DeleteThreadAsync(string threadId)
     {
+        // First stop the thread if it's running
         await StopThreadAsync(threadId);
-        _logger.LogDebug("Deleted thread {ThreadId}", threadId);
+        
+        // Remove from wallet cache
+        _walletCache.TryRemove(threadId, out _);
+        
+        // Actually delete the thread from storage
+        await _storageService.DeleteThreadConfigAsync(threadId);
+        
+        _logger.LogDebug("Deleted thread {ThreadId} from storage and cache", threadId);
     }
 
     public Task<ThreadConfig> GetThreadConfigAsync(string threadId)

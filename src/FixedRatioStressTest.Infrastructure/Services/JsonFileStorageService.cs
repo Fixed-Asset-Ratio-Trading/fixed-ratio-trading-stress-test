@@ -99,6 +99,44 @@ public class JsonFileStorageService : IStorageService
         return new List<ThreadConfig>();
     }
 
+    public async Task DeleteThreadConfigAsync(string threadId)
+    {
+        await _fileLock.WaitAsync();
+        try
+        {
+            var threadsFile = Path.Combine(_dataDirectory, "threads.json");
+            var tempFile = $"{threadsFile}.tmp";
+
+            var threads = await LoadAllThreadsAsync() ?? new List<ThreadConfig>();
+            var initialCount = threads.Count;
+            
+            // Remove the thread from the list
+            threads.RemoveAll(t => t.ThreadId == threadId);
+            
+            if (threads.Count < initialCount)
+            {
+                // Thread was found and removed, save the updated list
+                var json = JsonSerializer.Serialize(new { threads }, _jsonOptions);
+                await File.WriteAllTextAsync(tempFile, json);
+
+                if (File.Exists(threadsFile))
+                    File.Replace(tempFile, threadsFile, $"{threadsFile}.backup");
+                else
+                    File.Move(tempFile, threadsFile);
+                
+                _logger.LogDebug("Removed thread {ThreadId} from storage", threadId);
+            }
+            else
+            {
+                _logger.LogWarning("Thread {ThreadId} not found in storage for deletion", threadId);
+            }
+        }
+        finally
+        {
+            _fileLock.Release();
+        }
+    }
+
     public async Task SaveThreadStatisticsAsync(string threadId, ThreadStatistics statistics)
     {
         await _fileLock.WaitAsync();
