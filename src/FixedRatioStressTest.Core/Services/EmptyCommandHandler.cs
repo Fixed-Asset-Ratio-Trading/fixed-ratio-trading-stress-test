@@ -251,13 +251,13 @@ namespace FixedRatioStressTest.Core.Services
                 // Calculate expected output
                 var swapCalc = SwapCalculation.Calculate(pool, swapDirection, inputBalance);
                 
-                // Attempt swap operation
+                // Attempt swap operation (Fixed Ratio Trading requires exact output)
                 var swapResult = await _solanaClient.ExecuteSwapAsync(
                     context.Wallet,
                     context.PoolId,
                     swapDirection,
                     inputBalance,
-                    (ulong)(swapCalc.OutputAmount * 0.9)); // 10% slippage tolerance
+                    swapCalc.OutputAmount); // Exact output required, no slippage
                 
                 result.TokensSwappedOut = swapResult.OutputTokens;
                 result.TransactionSignature = swapResult.TransactionSignature;
