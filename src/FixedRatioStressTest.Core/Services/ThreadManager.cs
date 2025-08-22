@@ -560,8 +560,8 @@ public class ThreadManager : IThreadManager
     {
         try
         {
-            _logger.LogDebug("Executing swap operation for thread {ThreadId}, direction: {Direction}", 
-                config.ThreadId, config.SwapDirection);
+            _logger.LogInformation("🎯 STARTING SWAP OPERATION - Thread {ThreadId}, direction: {Direction}, initialAmount: {InitialAmount}, autoRefill: {AutoRefill}", 
+                config.ThreadId, config.SwapDirection, config.InitialAmount, config.AutoRefill);
 
             // Check SOL balance for transaction fees
             var solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
@@ -613,13 +613,18 @@ public class ThreadManager : IThreadManager
             // Check actual input token balance for swap
             var inputBalance = await _solanaClient.GetTokenBalanceAsync(wallet.Account.PublicKey.Key, inputMint);
             
+            _logger.LogDebug("🔍 SWAP LOGIC DEBUG - Thread {ThreadId}: inputBalance={Balance}, initialAmount={InitialAmount}, autoRefill={AutoRefill}", 
+                config.ThreadId, inputBalance, config.InitialAmount, config.AutoRefill);
+            
             // If no balance, handle according to thread configuration
             if (inputBalance == 0)
             {
+                _logger.LogWarning("🚨 ZERO TOKENS DETECTED - Thread {ThreadId} has no input tokens for swap", config.ThreadId);
+                
                 // Only threads created with InitialAmount > 0 should request more tokens when depleted
                 if (config.InitialAmount > 0 && config.AutoRefill)
                 {
-                    _logger.LogInformation("Swap thread {ThreadId} depleted tokens, requesting {Amount} from core wallet (mint: {InputMint})", 
+                    _logger.LogInformation("💰 Swap thread {ThreadId} depleted tokens, requesting {Amount} from core wallet (mint: {InputMint})", 
                         config.ThreadId, config.InitialAmount, inputMint);
                     
                     await _solanaClient.MintTokensAsync(inputMint, wallet.Account.PublicKey.Key, config.InitialAmount);
@@ -628,7 +633,7 @@ public class ThreadManager : IThreadManager
                     inputBalance = await _solanaClient.GetTokenBalanceWithRetryAsync(
                         wallet.Account.PublicKey.Key, inputMint, expectedMinimum: 1, maxRetries: 5);
                     
-                    _logger.LogInformation("Swap thread {ThreadId} refunded with {Amount} tokens (verified balance: {Balance})", 
+                    _logger.LogInformation("✅ Swap thread {ThreadId} refunded with {Amount} tokens (verified balance: {Balance})", 
                         config.ThreadId, config.InitialAmount, inputBalance);
                 }
                 
@@ -637,14 +642,21 @@ public class ThreadManager : IThreadManager
                 {
                     if (config.InitialAmount > 0)
                     {
-                        _logger.LogDebug("Swap thread {ThreadId} with initial funding waiting for tokens...", config.ThreadId);
+                        _logger.LogInformation("⏳ Swap thread {ThreadId} with initial funding waiting for tokens...", config.ThreadId);
                     }
                     else
                     {
-                        _logger.LogDebug("Swap thread {ThreadId} without initial funding waiting for token sharing...", config.ThreadId);
+                        _logger.LogInformation("⏳ Swap thread {ThreadId} without initial funding waiting for token sharing...", config.ThreadId);
                     }
+                    _logger.LogDebug("🔄 RETURNING WAIT STATE - Thread {ThreadId} will retry in next loop iteration", config.ThreadId);
                     return ("swap_waiting", true, 0); // Return success=true to keep thread running
                 }
+                
+                _logger.LogDebug("✅ Thread {ThreadId} now has {Balance} tokens after refunding, proceeding with swap", config.ThreadId, inputBalance);
+            }
+            else
+            {
+                _logger.LogDebug("✅ Thread {ThreadId} has {Balance} input tokens, proceeding with swap", config.ThreadId, inputBalance);
             }
 
             // Calculate random swap amount (up to 2% of input token balance as per design)
@@ -656,19 +668,25 @@ public class ThreadManager : IThreadManager
             swapAmount = Math.Min(swapAmount, inputBalance);
             
             // Validate swap amount is not zero or too small
+            _logger.LogDebug("🧮 AMOUNT VALIDATION - Thread {ThreadId}: swapAmount={SwapAmount}, inputBalance={InputBalance}", 
+                config.ThreadId, swapAmount, inputBalance);
+                
             if (swapAmount == 0)
             {
-                _logger.LogDebug("Calculated swap amount is 0 for thread {ThreadId}, waiting...", config.ThreadId);
+                _logger.LogWarning("🚨 ZERO SWAP AMOUNT - Thread {ThreadId} calculated swap amount is 0, waiting...", config.ThreadId);
                 return ("swap_waiting", true, 0);
             }
             
             // Use the fee-aware swap calculation
             var swapCalc = SwapCalculation.Calculate(pool, swapDirection, swapAmount);
             
+            _logger.LogDebug("🧮 OUTPUT VALIDATION - Thread {ThreadId}: expectedOutput={Output}", 
+                config.ThreadId, swapCalc.OutputAmount);
+            
             // Validate expected output is not zero
             if (swapCalc.OutputAmount == 0)
             {
-                _logger.LogDebug("Calculated output amount is 0 for thread {ThreadId} (input: {Input}), waiting...", 
+                _logger.LogWarning("🚨 ZERO OUTPUT AMOUNT - Thread {ThreadId} calculated output is 0 (input: {Input}), waiting...", 
                     config.ThreadId, swapAmount);
                 return ("swap_waiting", true, 0);
             }
