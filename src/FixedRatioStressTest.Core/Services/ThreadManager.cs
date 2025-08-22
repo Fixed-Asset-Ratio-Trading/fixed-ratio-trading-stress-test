@@ -571,14 +571,14 @@ public class ThreadManager : IThreadManager
             await _solanaClient.EnsureAtaExistsAsync(wallet, inputMint);
             await _solanaClient.EnsureAtaExistsAsync(wallet, outputMint);
             
-            // Check for initial funding if this is the first run
+            // Check for initial funding if this is the first run and thread was configured with initial amount
             if (config.InitialAmount > 0 && !config.AutoRefill)
             {
-                // Mark as refilled to prevent repeated funding
+                // Mark as initially funded to prevent repeated funding
                 config.AutoRefill = true;
                 await _storageService.SaveThreadConfigAsync(config.ThreadId, config);
                 
-                // Fund with initial tokens
+                // Fund with initial tokens (only for threads that were created with initial amounts)
                 await _solanaClient.MintTokensAsync(inputMint, wallet.Account.PublicKey.Key, config.InitialAmount);
                 
                 // Wait for tokens to be visible on blockchain with retry logic
@@ -589,31 +589,41 @@ public class ThreadManager : IThreadManager
                     config.ThreadId, config.InitialAmount, actualBalance);
             }
             
-            // Check actual input token balance for swap with retry logic (in case initial funding just happened)
-            var inputBalance = await _solanaClient.GetTokenBalanceWithRetryAsync(wallet.Account.PublicKey.Key, inputMint, expectedMinimum: 1, maxRetries: 3);
+            // Check actual input token balance for swap
+            var inputBalance = await _solanaClient.GetTokenBalanceAsync(wallet.Account.PublicKey.Key, inputMint);
             
-            // If no balance, bootstrap with tokens so the thread can start swapping
+            // If no balance, handle according to thread configuration
             if (inputBalance == 0)
             {
-                // Use InitialAmount if configured, otherwise use a default bootstrap amount
-                var bootstrapAmount = config.InitialAmount > 0 ? config.InitialAmount : 1_000_000UL; // 0.001 tokens at 9 decimals
+                // Only threads created with InitialAmount > 0 should request more tokens when depleted
+                if (config.InitialAmount > 0 && config.AutoRefill)
+                {
+                    _logger.LogInformation("Swap thread {ThreadId} depleted tokens, requesting {Amount} from core wallet (mint: {InputMint})", 
+                        config.ThreadId, config.InitialAmount, inputMint);
+                    
+                    await _solanaClient.MintTokensAsync(inputMint, wallet.Account.PublicKey.Key, config.InitialAmount);
+                    
+                    // Re-check balance with retry
+                    inputBalance = await _solanaClient.GetTokenBalanceWithRetryAsync(
+                        wallet.Account.PublicKey.Key, inputMint, expectedMinimum: 1, maxRetries: 5);
+                    
+                    _logger.LogInformation("Swap thread {ThreadId} refunded with {Amount} tokens (verified balance: {Balance})", 
+                        config.ThreadId, config.InitialAmount, inputBalance);
+                }
                 
-                _logger.LogInformation("Bootstrapping swap thread {ThreadId} with {Amount} input tokens (mint: {InputMint})", 
-                    config.ThreadId, bootstrapAmount, inputMint);
-                
-                await _solanaClient.MintTokensAsync(inputMint, wallet.Account.PublicKey.Key, bootstrapAmount);
-                
-                // Re-check balance with retry
-                inputBalance = await _solanaClient.GetTokenBalanceWithRetryAsync(
-                    wallet.Account.PublicKey.Key, inputMint, expectedMinimum: 1, maxRetries: 5);
-                
-                _logger.LogInformation("Swap thread {ThreadId} bootstrap complete. Input token balance: {Balance}", 
-                    config.ThreadId, inputBalance);
-            }
-            if (inputBalance == 0)
-            {
-                _logger.LogDebug("No input tokens available for swap in thread {ThreadId}, waiting...", config.ThreadId);
-                return ("swap_waiting", false, 0);
+                // If still no balance, wait for token sharing (don't fail the thread)
+                if (inputBalance == 0)
+                {
+                    if (config.InitialAmount > 0)
+                    {
+                        _logger.LogDebug("Swap thread {ThreadId} with initial funding waiting for tokens...", config.ThreadId);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("Swap thread {ThreadId} without initial funding waiting for token sharing...", config.ThreadId);
+                    }
+                    return ("swap_waiting", true, 0); // Return success=true to keep thread running
+                }
             }
 
             // Calculate random swap amount (up to 2% of input token balance as per design)
@@ -624,8 +634,23 @@ public class ThreadManager : IThreadManager
             // Ensure we don't try to swap more than available
             swapAmount = Math.Min(swapAmount, inputBalance);
             
+            // Validate swap amount is not zero or too small
+            if (swapAmount == 0)
+            {
+                _logger.LogDebug("Calculated swap amount is 0 for thread {ThreadId}, waiting...", config.ThreadId);
+                return ("swap_waiting", true, 0);
+            }
+            
             // Use the fee-aware swap calculation
             var swapCalc = SwapCalculation.Calculate(pool, swapDirection, swapAmount);
+            
+            // Validate expected output is not zero
+            if (swapCalc.OutputAmount == 0)
+            {
+                _logger.LogDebug("Calculated output amount is 0 for thread {ThreadId} (input: {Input}), waiting...", 
+                    config.ThreadId, swapAmount);
+                return ("swap_waiting", true, 0);
+            }
             
             // Log the calculation for debugging
             _logger.LogDebug("Pool decimals - TokenA: {TokenADecimals}, TokenB: {TokenBDecimals}", 
