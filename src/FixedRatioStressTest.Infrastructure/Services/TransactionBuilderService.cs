@@ -576,7 +576,7 @@ public class TransactionBuilderService : ITransactionBuilderService
                     AccountMeta.Writable(wallet.Account.PublicKey, true),                  // [0]
                     AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),               // [1]
                     AccountMeta.ReadOnly(systemStatePda, false),                           // [2]
-                    AccountMeta.ReadOnly(new PublicKey(poolState.PoolId), false),         // [3]
+                    AccountMeta.Writable(new PublicKey(poolState.PoolId), false),         // [3] MUST be writable for fee tracking
                     AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),                // [4]
                     AccountMeta.Writable(tokenAVault, false),                              // [5]
                     AccountMeta.Writable(tokenBVault, false),                              // [6]
@@ -605,12 +605,19 @@ public class TransactionBuilderService : ITransactionBuilderService
                 // Get compute units
                 var computeUnits = _computeUnitManager.GetComputeUnits("process_swap_execute");
                 
+                // Add fee payment instruction
+                var feeInstruction = SystemProgram.Transfer(
+                    wallet.Account.PublicKey, 
+                    systemStatePda, 
+                    SolanaConfiguration.SWAP_CONTRACT_FEE);
+                
                 // Build transaction
                 var blockHash = await GetRecentBlockHashAsync();
                 var builder = new TransactionBuilder()
                     .SetFeePayer(wallet.Account.PublicKey)
                     .SetRecentBlockHash(blockHash)
                     .AddInstruction(ComputeBudgetProgram.SetComputeUnitLimit(computeUnits))
+                    .AddInstruction(feeInstruction) // Add fee payment first
                     .AddInstruction(instruction);
                 
                 return builder.Build(wallet.Account);

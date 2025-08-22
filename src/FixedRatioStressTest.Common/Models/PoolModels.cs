@@ -103,8 +103,9 @@ namespace FixedRatioStressTest.Common.Models
                 _ => throw new ArgumentException("Invalid swap direction")
             };
             
-            // Apply slippage tolerance
-            var minimumOutput = (ulong)(outputAmount * (1 - slippageTolerance));
+            // For Fixed Ratio Trading, use exact output (no slippage tolerance)
+            // The contract enforces exact calculations
+            var minimumOutput = outputAmount;
             
             return new SwapCalculation
             {
