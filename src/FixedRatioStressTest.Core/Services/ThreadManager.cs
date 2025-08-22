@@ -360,9 +360,10 @@ public class ThreadManager : IThreadManager
 
             // Check SOL balance for transaction fees
             var solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
-            if (solBalance < 1000000) // Less than 0.001 SOL for fees
+            if (solBalance < 100000000) // Less than 0.1 SOL for fees
             {
-                _logger.LogWarning("Insufficient SOL balance for fees in thread {ThreadId}, requesting SOL transfer", config.ThreadId);
+                _logger.LogWarning("Insufficient SOL balance ({Balance} SOL) for fees in thread {ThreadId}, requesting SOL transfer", 
+                    solBalance / 1_000_000_000.0, config.ThreadId);
                 var transferred = await TransferSolFromCoreWallet(wallet.Account.PublicKey.Key);
                 if (!transferred)
                 {
@@ -370,6 +371,8 @@ public class ThreadManager : IThreadManager
                 }
                 // Re-check balance after transfer
                 solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
+                _logger.LogInformation("SOL balance after transfer: {Balance} SOL for thread {ThreadId}", 
+                    solBalance / 1_000_000_000.0, config.ThreadId);
             }
 
             // Get pool state and determine token mint
@@ -458,14 +461,19 @@ public class ThreadManager : IThreadManager
 
             // Check SOL balance for transaction fees
             var solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
-            if (solBalance < 1000000) // Less than 0.001 SOL for fees
+            if (solBalance < 100000000) // Less than 0.1 SOL for fees
             {
-                _logger.LogWarning("Insufficient SOL balance for fees in thread {ThreadId}, requesting SOL transfer", config.ThreadId);
+                _logger.LogWarning("Insufficient SOL balance ({Balance} SOL) for fees in thread {ThreadId}, requesting SOL transfer", 
+                    solBalance / 1_000_000_000.0, config.ThreadId);
                 var transferred = await TransferSolFromCoreWallet(wallet.Account.PublicKey.Key);
                 if (!transferred)
                 {
                     return ("withdrawal_insufficient_sol", false, 0);
                 }
+                // Re-check balance after transfer
+                solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
+                _logger.LogInformation("SOL balance after transfer: {Balance} SOL for thread {ThreadId}", 
+                    solBalance / 1_000_000_000.0, config.ThreadId);
             }
 
             // Get pool state and determine LP mint
@@ -549,14 +557,19 @@ public class ThreadManager : IThreadManager
 
             // Check SOL balance for transaction fees
             var solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
-            if (solBalance < 1000000) // Less than 0.001 SOL for fees
+            if (solBalance < 100000000) // Less than 0.1 SOL for fees
             {
-                _logger.LogWarning("Insufficient SOL balance for fees in thread {ThreadId}, requesting SOL transfer", config.ThreadId);
+                _logger.LogWarning("Insufficient SOL balance ({Balance} SOL) for fees in thread {ThreadId}, requesting SOL transfer", 
+                    solBalance / 1_000_000_000.0, config.ThreadId);
                 var transferred = await TransferSolFromCoreWallet(wallet.Account.PublicKey.Key);
                 if (!transferred)
                 {
                     return ("swap_insufficient_sol", false, 0);
                 }
+                // Re-check balance after transfer
+                solBalance = await _solanaClient.GetSolBalanceAsync(wallet.Account.PublicKey.Key);
+                _logger.LogInformation("SOL balance after transfer: {Balance} SOL for thread {ThreadId}", 
+                    solBalance / 1_000_000_000.0, config.ThreadId);
             }
 
             // Get pool state to determine token mints
