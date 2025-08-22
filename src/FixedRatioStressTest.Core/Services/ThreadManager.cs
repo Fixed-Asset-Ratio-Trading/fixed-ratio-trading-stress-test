@@ -623,8 +623,8 @@ public class ThreadManager : IThreadManager
                     config.ThreadId, config.InitialAmount, actualBalance);
             }
             
-            // Check actual input token balance for swap
-            var inputBalance = await _solanaClient.GetTokenBalanceAsync(wallet.Account.PublicKey.Key, inputMint);
+            // Re-check actual input token balance for swap (may have been updated by initial funding)
+            inputBalance = await _solanaClient.GetTokenBalanceAsync(wallet.Account.PublicKey.Key, inputMint);
             
             _logger.LogDebug("🔍 SWAP LOGIC DEBUG - Thread {ThreadId}: inputBalance={Balance}, initialAmount={InitialAmount}, autoRefill={AutoRefill}", 
                 config.ThreadId, inputBalance, config.InitialAmount, config.AutoRefill);
