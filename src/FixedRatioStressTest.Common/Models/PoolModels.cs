@@ -21,6 +21,12 @@ namespace FixedRatioStressTest.Common.Models
         public bool SwapsPaused { get; set; }
         public DateTime CreatedAt { get; set; }
         
+        // Fee percentage fields (basis points)
+        public ulong SwapFeeNumerator { get; set; }  // e.g., 30 = 0.3%
+        public ulong SwapFeeDenominator { get; set; } = 10000;  // Default 10000 = 100%
+        public ulong LiquidityFeeNumerator { get; set; }  // e.g., 30 = 0.3%
+        public ulong LiquidityFeeDenominator { get; set; } = 10000;  // Default 10000 = 100%
+        
         // Blockchain pool creation tracking
         public string? CreationSignature { get; set; }
         public string? PayerWallet { get; set; }
@@ -82,14 +88,18 @@ namespace FixedRatioStressTest.Common.Models
         public ulong MinimumOutputAmount { get; set; }
         public double PriceImpact { get; set; }
         public string SwapDirection { get; set; } = string.Empty;
+        public ulong FeeAmount { get; set; }  // Fee deducted from output
         
         public static SwapCalculation Calculate(PoolState pool, Common.Models.SwapDirection direction, ulong inputAmount, double slippageTolerance = 0.01)
         {
-            // Fixed ratio swap formula: output = (input × output_ratio) ÷ input_ratio
+            // CRITICAL: The Fixed Ratio Trading contract uses OPPOSITE formulas from what you'd expect!
+            // This has been verified by analyzing contract error logs
             ulong outputAmount = direction switch
             {
-                Common.Models.SwapDirection.AToB => (inputAmount * pool.RatioBDenominator) / pool.RatioANumerator,
-                Common.Models.SwapDirection.BToA => (inputAmount * pool.RatioANumerator) / pool.RatioBDenominator,
+                // For A→B swaps, contract uses the B→A formula
+                Common.Models.SwapDirection.AToB => (inputAmount * pool.RatioANumerator) / pool.RatioBDenominator,
+                // For B→A swaps, contract uses the A→B formula  
+                Common.Models.SwapDirection.BToA => (inputAmount * pool.RatioBDenominator) / pool.RatioANumerator,
                 _ => throw new ArgumentException("Invalid swap direction")
             };
             

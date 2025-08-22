@@ -11,6 +11,7 @@ public class ThreadManager : IThreadManager
     private readonly IStorageService _storageService;
     private readonly ISolanaClientService _solanaClient;
     private readonly ITransactionBuilderService _transactionBuilder;
+    private readonly IContractErrorHandler _contractErrorHandler;
     private readonly ILogger<ThreadManager> _logger;
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _runningThreads;
     private readonly ConcurrentDictionary<string, Wallet> _walletCache;
@@ -19,11 +20,13 @@ public class ThreadManager : IThreadManager
         IStorageService storageService, 
         ISolanaClientService solanaClient,
         ITransactionBuilderService transactionBuilder,
+        IContractErrorHandler contractErrorHandler,
         ILogger<ThreadManager> logger)
     {
         _storageService = storageService;
         _solanaClient = solanaClient;
         _transactionBuilder = transactionBuilder;
+        _contractErrorHandler = contractErrorHandler;
         _logger = logger;
         _runningThreads = new ConcurrentDictionary<string, CancellationTokenSource>();
         _walletCache = new ConcurrentDictionary<string, Wallet>();
@@ -84,9 +87,17 @@ public class ThreadManager : IThreadManager
     {
         var config = await _storageService.LoadThreadConfigAsync(threadId);
 
+        // Recover from stale Running status on restart: if status says Running but no worker exists, allow start
         if (config.Status == ThreadStatus.Running)
         {
-            throw new InvalidOperationException($"Thread {threadId} is already running");
+            if (!_runningThreads.ContainsKey(threadId))
+            {
+                _logger.LogWarning("Thread {ThreadId} marked Running but no worker found. Recovering by restarting.", threadId);
+            }
+            else
+            {
+                throw new InvalidOperationException($"Thread {threadId} is already running");
+            }
         }
 
         // Phase 2: Restore wallet and check initial balance
@@ -222,18 +233,19 @@ public class ThreadManager : IThreadManager
                         break;
                 }
 
+                // If the operation failed, stop the thread immediately
+                if (!operationSuccess)
+                {
+                    _logger.LogError("Operation {OperationType} failed in thread {ThreadId}. Stopping thread.", operationType, config.ThreadId);
+                    await StopThreadAsync(config.ThreadId);
+                    break;
+                }
+
                 // Update statistics
                 var statistics = await _storageService.LoadThreadStatisticsAsync(config.ThreadId);
                 
-                if (operationSuccess)
-                {
-                    statistics.SuccessfulOperations++;
-                    statistics.TotalVolumeProcessed += volumeProcessed;
-                }
-                else
-                {
-                    statistics.FailedOperations++;
-                }
+                statistics.SuccessfulOperations++;
+                statistics.TotalVolumeProcessed += volumeProcessed;
                 
                 statistics.LastOperationAt = DateTime.UtcNow;
                 await _storageService.SaveThreadStatisticsAsync(config.ThreadId, statistics);
@@ -248,19 +260,22 @@ public class ThreadManager : IThreadManager
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in worker thread {ThreadId}", config.ThreadId);
+                _logger.LogError(ex, "Error in worker thread {ThreadId}; stopping thread", config.ThreadId);
 
+                // Record the error
                 var error = new ThreadError
                 {
                     Timestamp = DateTime.UtcNow,
                     ErrorMessage = ex.Message,
                     OperationType = "thread_operation"
                 };
-
                 await _storageService.AddThreadErrorAsync(config.ThreadId, error);
 
-                // Wait before retrying on unexpected errors
-                await Task.Delay(5000, cancellationToken);
+                // Use existing stop logic to cancel and persist state
+                await StopThreadAsync(config.ThreadId);
+
+                // Exit the loop
+                break;
             }
         }
 
@@ -406,6 +421,29 @@ public class ThreadManager : IThreadManager
         }
         catch (Exception ex)
         {
+            // Check if this is a contract error that should stop the thread
+            bool isContractError = _contractErrorHandler.TryParseContractError(ex, out _);
+            bool isTransactionFailure = ex.Message.Contains("custom program error") || 
+                                      ex.Message.Contains("Transaction simulation failed") ||
+                                      ex.Message.Contains("Transaction failed");
+            
+            if (isContractError || isTransactionFailure)
+            {
+                // Mark stopped and cancel the running thread to stop immediately
+                config.Status = ThreadStatus.Stopped;
+                await _storageService.SaveThreadConfigAsync(config.ThreadId, config);
+                
+                if (_runningThreads.TryGetValue(config.ThreadId, out var cts))
+                {
+                    try { cts.Cancel(); } catch { /* ignore */ }
+                }
+                _runningThreads.TryRemove(config.ThreadId, out _);
+                
+                // Re-throw to let the main error handler stop the thread
+                throw;
+            }
+            
+            // For other errors, just log and return failure
             _logger.LogWarning(ex, "Deposit operation failed for thread {ThreadId}", config.ThreadId);
             return ("deposit_failed", false, 0);
         }
@@ -473,6 +511,29 @@ public class ThreadManager : IThreadManager
         }
         catch (Exception ex)
         {
+            // Check if this is a contract error that should stop the thread
+            bool isContractError = _contractErrorHandler.TryParseContractError(ex, out _);
+            bool isTransactionFailure = ex.Message.Contains("custom program error") || 
+                                      ex.Message.Contains("Transaction simulation failed") ||
+                                      ex.Message.Contains("Transaction failed");
+            
+            if (isContractError || isTransactionFailure)
+            {
+                // Mark stopped and cancel the running thread to stop immediately
+                config.Status = ThreadStatus.Stopped;
+                await _storageService.SaveThreadConfigAsync(config.ThreadId, config);
+                
+                if (_runningThreads.TryGetValue(config.ThreadId, out var cts))
+                {
+                    try { cts.Cancel(); } catch { /* ignore */ }
+                }
+                _runningThreads.TryRemove(config.ThreadId, out _);
+                
+                // Re-throw to let the main error handler stop the thread
+                throw;
+            }
+            
+            // For other errors, just log and return failure
             _logger.LogWarning(ex, "Withdrawal operation failed for thread {ThreadId}", config.ThreadId);
             return ("withdrawal_failed", false, 0);
         }
@@ -530,6 +591,25 @@ public class ThreadManager : IThreadManager
             
             // Check actual input token balance for swap with retry logic (in case initial funding just happened)
             var inputBalance = await _solanaClient.GetTokenBalanceWithRetryAsync(wallet.Account.PublicKey.Key, inputMint, expectedMinimum: 1, maxRetries: 3);
+            
+            // If no balance, bootstrap with tokens so the thread can start swapping
+            if (inputBalance == 0)
+            {
+                // Use InitialAmount if configured, otherwise use a default bootstrap amount
+                var bootstrapAmount = config.InitialAmount > 0 ? config.InitialAmount : 1_000_000UL; // 0.001 tokens at 9 decimals
+                
+                _logger.LogInformation("Bootstrapping swap thread {ThreadId} with {Amount} input tokens (mint: {InputMint})", 
+                    config.ThreadId, bootstrapAmount, inputMint);
+                
+                await _solanaClient.MintTokensAsync(inputMint, wallet.Account.PublicKey.Key, bootstrapAmount);
+                
+                // Re-check balance with retry
+                inputBalance = await _solanaClient.GetTokenBalanceWithRetryAsync(
+                    wallet.Account.PublicKey.Key, inputMint, expectedMinimum: 1, maxRetries: 5);
+                
+                _logger.LogInformation("Swap thread {ThreadId} bootstrap complete. Input token balance: {Balance}", 
+                    config.ThreadId, inputBalance);
+            }
             if (inputBalance == 0)
             {
                 _logger.LogDebug("No input tokens available for swap in thread {ThreadId}, waiting...", config.ThreadId);
@@ -544,11 +624,20 @@ public class ThreadManager : IThreadManager
             // Ensure we don't try to swap more than available
             swapAmount = Math.Min(swapAmount, inputBalance);
             
-            // Calculate minimum output with 5% slippage tolerance
-            var expectedOutput = swapDirection == SwapDirection.AToB 
-                ? (swapAmount * pool.RatioBDenominator) / pool.RatioANumerator
-                : (swapAmount * pool.RatioANumerator) / pool.RatioBDenominator;
-            var minimumOutput = expectedOutput * 95 / 100; // 5% slippage tolerance
+            // Use the fee-aware swap calculation
+            var swapCalc = SwapCalculation.Calculate(pool, swapDirection, swapAmount);
+            
+            // Log the calculation for debugging
+            _logger.LogDebug("Pool decimals - TokenA: {TokenADecimals}, TokenB: {TokenBDecimals}", 
+                pool.TokenADecimals, pool.TokenBDecimals);
+            
+            _logger.LogDebug("Swap calculation for {Direction}: input={Input} basis points, ratioA={RatioA}, ratioB={RatioB}, netOutput={NetOutput} basis points",
+                swapDirection, swapAmount, pool.RatioANumerator, pool.RatioBDenominator, 
+                swapCalc.OutputAmount);
+            
+            // Fixed Ratio Trading requires EXACT expected output (no slippage)
+            var expectedOutput = swapCalc.OutputAmount;
+            var minimumOutput = swapCalc.MinimumOutputAmount;  // Must be exactly the same as expectedOutput
             
             // Submit swap transaction
             var result = await _solanaClient.ExecuteSwapAsync(
@@ -567,6 +656,29 @@ public class ThreadManager : IThreadManager
         }
         catch (Exception ex)
         {
+            // Check if this is a contract error that should stop the thread
+            bool isContractError = _contractErrorHandler.TryParseContractError(ex, out _);
+            bool isTransactionFailure = ex.Message.Contains("custom program error") || 
+                                      ex.Message.Contains("Transaction simulation failed") ||
+                                      ex.Message.Contains("Transaction failed");
+            
+            if (isContractError || isTransactionFailure)
+            {
+                // Mark stopped and cancel the running thread to stop immediately
+                config.Status = ThreadStatus.Stopped;
+                await _storageService.SaveThreadConfigAsync(config.ThreadId, config);
+                
+                if (_runningThreads.TryGetValue(config.ThreadId, out var cts))
+                {
+                    try { cts.Cancel(); } catch { /* ignore */ }
+                }
+                _runningThreads.TryRemove(config.ThreadId, out _);
+                
+                // Re-throw to let the main error handler stop the thread
+                throw;
+            }
+            
+            // For other errors, just log and return failure
             _logger.LogWarning(ex, "Swap operation failed for thread {ThreadId}", config.ThreadId);
             return ("swap_failed", false, 0);
         }

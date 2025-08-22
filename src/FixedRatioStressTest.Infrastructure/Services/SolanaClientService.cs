@@ -1684,19 +1684,69 @@ public async Task CleanupInvalidPoolsAsync()
         {
             var ata = await _transactionBuilder.GetOrCreateAssociatedTokenAccountAsync(wallet, mintAddress);
             var info = await _rpcClient.GetAccountInfoAsync(ata);
-            if (info.Result?.Value == null)
+            if (info.Result?.Value != null) return;
+
+            // Ensure fee payer has funds before attempting ATA creation
+            try
             {
-                var blockHash = await _rpcClient.GetLatestBlockHashAsync();
-                var tx = new TransactionBuilder()
-                    .SetFeePayer(wallet.Account.PublicKey)
-                    .SetRecentBlockHash(blockHash.Result.Value.Blockhash)
-                    .AddInstruction(AssociatedTokenAccountProgram.CreateAssociatedTokenAccount(
-                        wallet.Account.PublicKey,
-                        wallet.Account.PublicKey,
-                        new PublicKey(mintAddress)))
-                    .Build(wallet.Account);
-                var sig = await SendTransactionAsync(tx);
-                await ConfirmTransactionAsync(sig);
+                var balance = await _rpcClient.GetBalanceAsync(wallet.Account.PublicKey);
+                var lamports = balance.Result?.Value ?? 0UL;
+                if (lamports < 200_000UL)
+                {
+                    _logger.LogWarning("Fee payer {Payer} has low balance ({Lamports} lamports) before ATA creation for mint {Mint}",
+                        wallet.Account.PublicKey, lamports, mintAddress);
+                }
+            }
+            catch { /* best-effort balance check */ }
+
+            // Retry ATA creation to avoid race conditions after recent funding
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                try
+                {
+                    var blockHash = await _rpcClient.GetLatestBlockHashAsync();
+                    var tx = new TransactionBuilder()
+                        .SetFeePayer(wallet.Account.PublicKey)
+                        .SetRecentBlockHash(blockHash.Result.Value.Blockhash)
+                        .AddInstruction(AssociatedTokenAccountProgram.CreateAssociatedTokenAccount(
+                            wallet.Account.PublicKey,
+                            wallet.Account.PublicKey,
+                            new PublicKey(mintAddress)))
+                        .Build(wallet.Account);
+
+                    var sig = await SendTransactionAsync(tx);
+                    var confirmed = await ConfirmTransactionAsync(sig);
+                    if (!confirmed)
+                    {
+                        _logger.LogWarning("ATA creation tx not confirmed (attempt {Attempt}) for {ATA}", attempt, ata);
+                    }
+
+                    // Verify ATA now exists
+                    var post = await _rpcClient.GetAccountInfoAsync(ata);
+                    if (post.Result?.Value != null)
+                    {
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    var msg = ex.Message ?? string.Empty;
+                    if (msg.Contains("Attempt to debit an account but found no record of a prior credit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogWarning("ATA creation attempt {Attempt} hit debit error; retrying after short delay", attempt);
+                        await Task.Delay(1000);
+                        continue;
+                    }
+                    throw;
+                }
+
+                await Task.Delay(500);
+            }
+            // Final check; if still missing, throw
+            var finalInfo = await _rpcClient.GetAccountInfoAsync(ata);
+            if (finalInfo.Result?.Value == null)
+            {
+                throw new InvalidOperationException($"Failed to create ATA {ata} for mint {mintAddress} after retries");
             }
         }
 

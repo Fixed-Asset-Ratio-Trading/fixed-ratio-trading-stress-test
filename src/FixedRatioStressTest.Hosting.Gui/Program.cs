@@ -35,6 +35,9 @@ internal static class Program
 		Directory.CreateDirectory(dataDir);
 		Directory.CreateDirectory(logsDir);
 
+		// Rotate existing gui.log file before starting new session
+		RotateExistingLogFile(logsDir);
+
 		// Minimal DI container for GUI host
 		var services = new ServiceCollection();
 
@@ -77,7 +80,13 @@ internal static class Program
 		services.AddSingleton<IContractVersionService, RawRpcContractVersionService>();
 		services.AddSingleton<ISolanaClientService, SolanaClientService>();
 		services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
-		services.AddSingleton<IThreadManager, FixedRatioStressTest.Core.Services.ThreadManager>();
+		services.AddSingleton<IContractErrorHandler, FixedRatioStressTest.Core.Services.ContractErrorHandler>();
+		services.AddSingleton<IThreadManager>(sp => new FixedRatioStressTest.Core.Services.ThreadManager(
+			sp.GetRequiredService<IStorageService>(),
+			sp.GetRequiredService<ISolanaClientService>(),
+			sp.GetRequiredService<ITransactionBuilderService>(),
+			sp.GetRequiredService<IContractErrorHandler>(),
+			sp.GetRequiredService<ILogger<FixedRatioStressTest.Core.Services.ThreadManager>>()));
 
 		// Service lifecycle engine
 		services.AddSingleton<IServiceLifecycle, StressTestEngine>(sp => new StressTestEngine(
@@ -119,6 +128,35 @@ internal static class Program
 	}
 
     // In-proc API bootstrap removed; managed by InProcessApiHost
+
+	private static void RotateExistingLogFile(string logsDir)
+	{
+		try
+		{
+			var guiLogPath = Path.Combine(logsDir, "gui.log");
+			
+			// Check if gui.log exists
+			if (File.Exists(guiLogPath))
+			{
+				// Get the last write time of the existing log file
+				var lastWriteTime = File.GetLastWriteTime(guiLogPath);
+				
+				// Format: gui_2025_08_21_14_30_15.log
+				var timestamp = lastWriteTime.ToString("yyyy-MM-dd-HH-mm-ss");
+				var rotatedLogPath = Path.Combine(logsDir, $"gui_{timestamp}.log");
+				
+				// Rename the existing file
+				File.Move(guiLogPath, rotatedLogPath);
+				
+				Console.WriteLine($"Rotated existing gui.log to gui_{timestamp}.log");
+			}
+		}
+		catch (Exception ex)
+		{
+			// Don't fail startup if log rotation fails
+			Console.WriteLine($"Warning: Failed to rotate existing gui.log: {ex.Message}");
+		}
+	}
 }
 
 // No legacy adapters; GUI subscribes to GuiLoggerProvider events

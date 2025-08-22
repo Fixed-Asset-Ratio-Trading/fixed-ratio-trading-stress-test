@@ -265,7 +265,34 @@ public class JsonRpcController : ControllerBase
         }
         var cfg = await _threadManager.GetThreadConfigAsync(id);
         var stats = await _threadManager.GetThreadStatisticsAsync(id);
-        return Ok(new JsonRpcResponse<object> { Result = new { config = cfg, statistics = stats }, Id = request.Id });
+
+        // Provide a human-readable swap direction string in addition to enum
+        string? swapDirString = null;
+        if (cfg.SwapDirection.HasValue)
+        {
+            swapDirString = cfg.SwapDirection.Value == SwapDirection.AToB ? "a_to_b" : "b_to_a";
+        }
+
+        var enhancedConfig = new
+        {
+            threadId = cfg.ThreadId,
+            threadType = cfg.ThreadType.ToString().ToLowerInvariant(), // human-readable: deposit, withdrawal, swap
+            poolId = cfg.PoolId,
+            tokenType = cfg.TokenType.ToString().ToLowerInvariant(), // human-readable: a, b
+            swapDirection = cfg.SwapDirection, // original enum value
+            swap_direction = swapDirString,     // human-readable string
+            initialAmount = cfg.InitialAmount,
+            autoRefill = cfg.AutoRefill,
+            shareTokens = cfg.ShareTokens,
+            status = cfg.Status.ToString().ToLowerInvariant(), // human-readable: running, stopped, etc.
+            createdAt = cfg.CreatedAt,
+            lastOperationAt = cfg.LastOperationAt,
+            publicKey = cfg.PublicKey,
+            privateKey = cfg.PrivateKey,
+            walletMnemonic = cfg.WalletMnemonic
+        };
+
+        return Ok(new JsonRpcResponse<object> { Result = new { config = enhancedConfig, statistics = stats }, Id = request.Id });
     }
 
     private async Task<ActionResult<object>> GetThreadStats(JsonRpcRequest request)
@@ -326,9 +353,10 @@ public class JsonRpcController : ControllerBase
                 thread_id = thread.ThreadId,
                 thread_type = thread.ThreadType.ToString().ToLowerInvariant(),
                 pool_id = thread.PoolId,
-                token_type = thread.TokenType.ToString(), // A or B
+                token_type = thread.TokenType.ToString().ToLowerInvariant(), // a or b
                 token_info = GetTokenDisplayInfo(thread),
-                swap_direction = thread.SwapDirection?.ToString(),
+                swap_direction = thread.SwapDirection.HasValue ? 
+                    (thread.SwapDirection.Value == SwapDirection.AToB ? "a_to_b" : "b_to_a") : null,
                 status = thread.Status.ToString().ToLowerInvariant(),
                 initial_amount = thread.InitialAmount,
                 auto_refill = thread.AutoRefill,

@@ -450,33 +450,37 @@ public class TransactionBuilderService : ITransactionBuilderService
                     _logger.LogDebug("User LP token account {0} balance: {1}", userLpTokenAccount, userLpTokenAccountInfo.Result.Value.UiAmountString);
                 }
 
-                // Build account structure exactly as per API (same as deposit but for withdrawal)
+                // Build account structure exactly as per API (Withdraw - 11 accounts):
+                // [0] User Authority Signer (signer)
+                // [1] System Program
+                // [2] System State PDA
+                // [3] Pool State PDA
+                // [4] SPL Token Program
+                // [5] Token A Vault PDA
+                // [6] Token B Vault PDA
+                // [7] User Input LP Token Account
+                // [8] User Output Token Account
+                // [9] LP Token A Mint PDA
+                // [10] LP Token B Mint PDA
+
+                var tokenAVault = new PublicKey(poolState.VaultA);
+                var tokenBVault = new PublicKey(poolState.VaultB);
+                var lpMintA = new PublicKey(poolState.LpMintA);
+                var lpMintB = new PublicKey(poolState.LpMintB);
+
                 var accounts = new List<AccountMeta>
                 {
-                    // [0] User Authority (Signer, Writable) - LP token holder
-                    AccountMeta.Writable(wallet.Account.PublicKey, true),
-                    // [1] System State PDA (Readable) - Pause validation
-                    AccountMeta.ReadOnly(systemStatePda, false),
-                    // [2] Pool State PDA (Writable) - Pool to withdraw from
-                    AccountMeta.Writable(new PublicKey(poolState.PoolId), false),
-                    // [3] User Token Account (Writable) - Destination for withdrawn tokens
-                    AccountMeta.Writable(new PublicKey(userTokenAccount), false),
-                    // [4] Pool Token Vault (Writable) - Source vault
-                    AccountMeta.Writable(new PublicKey(withdrawVault), false),
-                    // [5] Other Token Vault (Writable) - Paired token vault
-                    AccountMeta.Writable(new PublicKey(otherTokenVault), false),
-                    // [6] LP Token Mint (Writable) - LP mint to burn from
-                    AccountMeta.Writable(new PublicKey(lpMint), false),
-                    // [7] User LP Account (Writable) - Source of LP tokens to burn
-                    AccountMeta.Writable(new PublicKey(userLpTokenAccount), false),
-                    // [8] Token Program (Readable) - SPL token program
-                    AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),
-                    // [9] System Program (Readable) - For fee transfer
-                    AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),
-                    // [10] Main Treasury PDA (Writable) - Fee destination
-                    AccountMeta.Writable(new PublicKey(poolState.MainTreasury), false),
-                    // [11] Withdraw Token Mint (Readable) - Token being withdrawn
-                    AccountMeta.ReadOnly(new PublicKey(withdrawTokenMint), false)
+                    AccountMeta.Writable(wallet.Account.PublicKey, true),                  // [0]
+                    AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),               // [1]
+                    AccountMeta.ReadOnly(systemStatePda, false),                           // [2]
+                    AccountMeta.Writable(new PublicKey(poolState.PoolId), false),          // [3]
+                    AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),                // [4]
+                    AccountMeta.Writable(tokenAVault, false),                              // [5]
+                    AccountMeta.Writable(tokenBVault, false),                              // [6]
+                    AccountMeta.Writable(new PublicKey(userLpTokenAccount), false),        // [7]
+                    AccountMeta.Writable(new PublicKey(userTokenAccount), false),          // [8]
+                    AccountMeta.Writable(lpMintA, false),                                  // [9]
+                    AccountMeta.Writable(lpMintB, false),                                  // [10]
                 };
 
                 // Build instruction data per API: [3][withdraw_token_mint (32)][lp_amount_to_burn u64 LE]
@@ -548,37 +552,45 @@ public class TransactionBuilderService : ITransactionBuilderService
                 var userInputAccount = await GetOrCreateAssociatedTokenAccountAsync(wallet, inputMint);
                 var userOutputAccount = await GetOrCreateAssociatedTokenAccountAsync(wallet, outputMint);
                 
-                // Build account structure per API documentation
+                // Build account structure per API documentation (Swap - 11 accounts):
+                // [0] User Authority Signer (signer)
+                // [1] System Program
+                // [2] System State PDA
+                // [3] Pool State PDA
+                // [4] SPL Token Program
+                // [5] Token A Vault PDA
+                // [6] Token B Vault PDA
+                // [7] User Input Token Account
+                // [8] User Output Token Account
+                // [9] Input Mint Account
+                // [10] Output Mint Account
+
+                var systemStatePda = DeriveSystemStatePda();
+                var tokenAVault = new PublicKey(poolState.VaultA);
+                var tokenBVault = new PublicKey(poolState.VaultB);
+                var inputMintKey = new PublicKey(inputMint);
+                var outputMintKey = new PublicKey(outputMint);
+
                 var accounts = new List<AccountMeta>
                 {
-                    // [0] User wallet (signer, writable) - pays fees
-                    AccountMeta.Writable(wallet.Account.PublicKey, true),
-                    // [1] System Program
-                    AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),
-                    // [2] SPL Token Program
-                    AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),
-                    // [3] System State PDA
-                    AccountMeta.ReadOnly(DeriveSystemStatePda(), false),
-                    // [4] Pool State PDA
-                    AccountMeta.ReadOnly(new PublicKey(poolState.PoolId), false),
-                    // [5] User's input token account (writable)
-                    AccountMeta.Writable(new PublicKey(userInputAccount), false),
-                    // [6] User's output token account (writable)
-                    AccountMeta.Writable(new PublicKey(userOutputAccount), false),
-                    // [7] Input vault PDA (writable)
-                    AccountMeta.Writable(new PublicKey(inputVault), false),
-                    // [8] Output vault PDA (writable)
-                    AccountMeta.Writable(new PublicKey(outputVault), false),
-                    // [9] Main Treasury PDA (writable)
-                    AccountMeta.Writable(new PublicKey(poolState.MainTreasury), false),
-                    // [10] Pool Treasury PDA (writable)
-                    AccountMeta.Writable(new PublicKey(poolState.PoolTreasury), false)
+                    AccountMeta.Writable(wallet.Account.PublicKey, true),                  // [0]
+                    AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false),               // [1]
+                    AccountMeta.ReadOnly(systemStatePda, false),                           // [2]
+                    AccountMeta.ReadOnly(new PublicKey(poolState.PoolId), false),         // [3]
+                    AccountMeta.ReadOnly(TokenProgram.ProgramIdKey, false),                // [4]
+                    AccountMeta.Writable(tokenAVault, false),                              // [5]
+                    AccountMeta.Writable(tokenBVault, false),                              // [6]
+                    AccountMeta.Writable(new PublicKey(userInputAccount), false),          // [7]
+                    AccountMeta.Writable(new PublicKey(userOutputAccount), false),         // [8]
+                    AccountMeta.ReadOnly(inputMintKey, false),                             // [9]
+                    AccountMeta.ReadOnly(outputMintKey, false)                             // [10]
                 };
                 
                 // Create instruction data
                 var data = new SwapInstructionData
                 {
-                    Discriminator = 8, // process_swap_execute
+                    Discriminator = 4, // Swap discriminator per API
+                    InputTokenMint = inputMint, // Add the input token mint
                     InputAmount = inputAmountBasisPoints,
                     MinimumOutputAmount = minimumOutputBasisPoints
                 };
@@ -1112,9 +1124,17 @@ public class TransactionBuilderService : ITransactionBuilderService
             else if (data is SwapInstructionData swap)
             {
                 var buffer = new List<byte> { swap.Discriminator };
+                
+                // Add the 32-byte input token mint (required by API)
+                var mintKey = new PublicKey(swap.InputTokenMint);
+                buffer.AddRange(mintKey.KeyBytes);
+                
+                // Add the amounts per API spec (lines 2508-2509):
+                // amount_in first, then expected_amount_out
                 buffer.AddRange(BitConverter.GetBytes(swap.InputAmount));
                 buffer.AddRange(BitConverter.GetBytes(swap.MinimumOutputAmount));
-                return buffer.ToArray();
+                
+                return buffer.ToArray(); // Total: 1 + 32 + 8 + 8 = 49 bytes
             }
             
             throw new NotSupportedException($"Unknown instruction data type: {typeof(T).Name}");
@@ -1144,6 +1164,7 @@ public class TransactionBuilderService : ITransactionBuilderService
     public class SwapInstructionData
     {
         public byte Discriminator { get; set; }
+        public string InputTokenMint { get; set; } = string.Empty;
         public ulong InputAmount { get; set; }
         public ulong MinimumOutputAmount { get; set; }
     }

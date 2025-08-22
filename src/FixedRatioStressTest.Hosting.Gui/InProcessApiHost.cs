@@ -85,7 +85,13 @@ public sealed class InProcessApiHost
 		builder.Services.AddSingleton<IComputeUnitManager, ComputeUnitManager>();
 		builder.Services.AddSingleton<IContractVersionService, RawRpcContractVersionService>();
 		builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
-		builder.Services.AddSingleton<IThreadManager, ThreadManager>();
+		builder.Services.AddSingleton<IContractErrorHandler, ContractErrorHandler>();
+		builder.Services.AddSingleton<IThreadManager>(sp => new ThreadManager(
+			sp.GetRequiredService<IStorageService>(),
+			sp.GetRequiredService<ISolanaClientService>(),
+			sp.GetRequiredService<ITransactionBuilderService>(),
+			sp.GetRequiredService<IContractErrorHandler>(),
+			sp.GetRequiredService<ILogger<ThreadManager>>()));
 		builder.Services.AddSingleton<IEmptyCommandHandler, EmptyCommandHandler>();
 		builder.Services.AddRouting();
 		builder.Services.AddControllers().AddApplicationPart(Assembly.Load("FixedRatioStressTest.Web"));
