@@ -39,7 +39,7 @@ public class ContractVersionService : IContractVersionService
         _rpcClient = ClientFactory.GetClient(rpcUrl);
         
         // Get expected and max supported versions from configuration
-        _expectedVersion = configuration["ContractVersion:Expected"] ?? "v0.15.1053";
+        _expectedVersion = configuration["ContractVersion:Expected"] ?? "v0.15.1054";
         _maxSupportedVersion = configuration["ContractVersion:MaxSupported"] ?? DEFAULT_MAX_SUPPORTED_VERSION;
         
         _logger.LogInformation("ContractVersionService initialized. RPC: {RpcUrl}, Expected: {ExpectedVersion}, Max Supported: {MaxSupportedVersion}", 

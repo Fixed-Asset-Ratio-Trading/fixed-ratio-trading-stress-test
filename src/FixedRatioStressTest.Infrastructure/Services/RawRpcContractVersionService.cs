@@ -4,6 +4,10 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using FixedRatioStressTest.Core.Interfaces;
 using FixedRatioStressTest.Common.Models;
+using Solnet.Wallet;
+using Solnet.Rpc.Models;
+using Solnet.Rpc.Builders;
+using Solnet.Programs;
 
 namespace FixedRatioStressTest.Infrastructure.Services;
 
@@ -33,7 +37,7 @@ public class RawRpcContractVersionService : IContractVersionService
         _httpClient = new HttpClient();
         
         // Get expected and max supported versions from configuration
-        _expectedVersion = configuration["ContractVersion:Expected"] ?? "v0.15.1053";
+        _expectedVersion = configuration["ContractVersion:Expected"] ?? "v0.15.1054";
         _maxSupportedVersion = configuration["ContractVersion:MaxSupported"] ?? DEFAULT_MAX_SUPPORTED_VERSION;
         
         _logger.LogInformation("RawRpcContractVersionService initialized. RPC: {RpcUrl}, Expected: {ExpectedVersion}, Max Supported: {MaxSupportedVersion}", 
@@ -121,15 +125,36 @@ public class RawRpcContractVersionService : IContractVersionService
         {
             _logger.LogInformation("🎯 Final GetVersion Test - Following JavaScript working pattern");
 
-            // Step 1: Try with dummy fee payer (expecting AccountNotFound but valid transaction format)
-            _logger.LogInformation("🔧 Step 1: Basic simulation with dummy fee payer (expecting AccountNotFound)...");
+            // Step 1: Try with signed transaction using ephemeral fee payer
+            _logger.LogInformation("🔧 Step 1: Simulation with ephemeral fee payer...");
             
             var (transactionBase64, feePayerPubkey) = await CreateGetVersionTransactionWithBlockhashAsync();
-            var version = await TryGetVersionFromSimulation(transactionBase64, "dummy fee payer");
+            var version = await TryGetVersionFromSimulation(transactionBase64, "ephemeral fee payer");
             
             if (!string.IsNullOrEmpty(version))
             {
                 return version;
+            }
+            
+            // Step 2: If AccountNotFound, try funding the ephemeral account and retry
+            _logger.LogInformation("🔧 Step 2: Funding ephemeral account and retrying...");
+            var fundingSuccess = await TryFundAccountAsync(feePayerPubkey);
+            if (fundingSuccess)
+            {
+                // Create a new transaction with a fresh ephemeral keypair (funding doesn't persist keypairs)
+                var (fundedTransactionBase64, fundedFeePayerPubkey) = await CreateGetVersionTransactionWithBlockhashAsync();
+                
+                // Fund this new account too
+                var secondFundingSuccess = await TryFundAccountAsync(fundedFeePayerPubkey);
+                if (secondFundingSuccess)
+                {
+                    version = await TryGetVersionFromSimulation(fundedTransactionBase64, "funded fee payer");
+                    
+                    if (!string.IsNullOrEmpty(version))
+                    {
+                        return version;
+                    }
+                }
             }
 
             // Step 2: Success validation - transaction format is correct and program responds
@@ -178,6 +203,7 @@ public class RawRpcContractVersionService : IContractVersionService
                     {
                         sigVerify = false,
                         replaceRecentBlockhash = true,
+                        commitment = "confirmed",
                         encoding = "base64"
                     }
                 }
@@ -323,68 +349,224 @@ public class RawRpcContractVersionService : IContractVersionService
 
     private async Task<(string transactionBase64, string feePayerPubkey)> CreateGetVersionTransactionWithBlockhashAsync(string? feePayerPubkey = null)
     {
-        // Create a transaction following the exact JavaScript pattern
-        var programIdBytes = DecodeBase58(_config.ProgramId);
+        // Create a transaction following the exact JavaScript pattern from API documentation
+        // This uses Solnet to create a properly signed transaction like the working JS example
         
-        // Generate fee payer if not provided
-        byte[] feePayerBytes;
-        if (feePayerPubkey == null)
-        {
-            feePayerBytes = new byte[32];
-            new Random().NextBytes(feePayerBytes);
-            feePayerPubkey = EncodeBase58(feePayerBytes);
-        }
-        else
-        {
-            feePayerBytes = DecodeBase58(feePayerPubkey);
-        }
-
-        // Get recent blockhash (like JS example)
-        var recentBlockhash = await GetLatestBlockhashAsync();
+        var programId = new PublicKey(_config.ProgramId);
+        
+        // Generate ephemeral keypair for fee payer (like JS example)
+        var feePayerKeypair = new Account();
+        var feePayerPublicKey = feePayerKeypair.PublicKey.ToString();
         
         _logger.LogInformation("✅ Transaction setup complete");
         _logger.LogInformation("   Program ID: {ProgramId}", _config.ProgramId);
         _logger.LogInformation("   Instruction discriminator: 14 (0x0E)");
-        _logger.LogInformation("   Fee payer: {FeePayer}", feePayerPubkey);
+        _logger.LogInformation("   Fee payer: {FeePayer}", feePayerPublicKey);
         
-        using var stream = new MemoryStream();
-        using var writer = new BinaryWriter(stream);
-
-        // 1. Number of signatures (1 byte)
-        writer.Write((byte)1);
-
-        // 2. Dummy signature (64 bytes) - ignored with sigVerify: false
-        writer.Write(new byte[64]);
-
-        // 3. Message header (following @solana/web3.js Transaction format)
-        writer.Write((byte)1); // Number of required signatures
-        writer.Write((byte)0); // Number of readonly signed accounts
-        writer.Write((byte)1); // Number of readonly unsigned accounts (program)
-
-        // 4. Account addresses (compact array)
-        writer.Write((byte)2); // 2 accounts: fee payer + program
-        writer.Write(feePayerBytes); // Fee payer (32 bytes) - index 0
-        writer.Write(programIdBytes); // Program ID (32 bytes) - index 1
-
-        // 5. Recent blockhash (32 bytes) - real blockhash like JS
-        writer.Write(recentBlockhash);
-
-        // 6. Instructions (compact array)
-        writer.Write((byte)1); // 1 instruction
-
-        // 7. GetVersion instruction (matches JS TransactionInstruction)
-        writer.Write((byte)1); // Program ID index (refers to account at index 1)
-        writer.Write((byte)0); // Keys array length (GetVersion needs no accounts)
-        writer.Write((byte)1); // Instruction data length
-        writer.Write(GET_VERSION_DISCRIMINATOR); // GetVersion discriminator (14)
-
-        var transactionBytes = stream.ToArray();
-        var base64Transaction = Convert.ToBase64String(transactionBytes);
+        // Create GetVersion instruction (no accounts required per API doc)
+        var instructionData = new byte[] { GET_VERSION_DISCRIMINATOR }; // [14]
+        var instruction = new TransactionInstruction
+        {
+            ProgramId = programId,
+            Keys = new List<AccountMeta>(), // Empty - GetVersion needs no accounts
+            Data = instructionData
+        };
         
-        _logger.LogDebug("Created GetVersion transaction: {Length} bytes, Base64: {Base64}", 
-            transactionBytes.Length, base64Transaction);
+        // Build and sign transaction (required even for simulation per API doc)
+        var recentBlockhash = await GetLatestBlockhashStringAsync();
+        var transaction = new TransactionBuilder()
+            .SetFeePayer(feePayerKeypair.PublicKey)
+            .SetRecentBlockHash(recentBlockhash)
+            .AddInstruction(instruction)
+            .Build(feePayerKeypair);
         
-        return (base64Transaction, feePayerPubkey);
+        var base64Transaction = Convert.ToBase64String(transaction);
+        
+        _logger.LogDebug("Created signed GetVersion transaction: {Length} bytes, Base64: {Base64}", 
+            transaction.Length, base64Transaction);
+        
+        return (base64Transaction, feePayerPublicKey);
+    }
+
+    private async Task<bool> TryFundAccountAsync(string publicKey)
+    {
+        try
+        {
+            _logger.LogInformation("💰 Requesting airdrop for ephemeral account: {PublicKey}", publicKey);
+            
+            // Request airdrop (works on localnet/devnet)
+            var airdropRequest = new
+            {
+                jsonrpc = "2.0",
+                id = 1,
+                method = "requestAirdrop",
+                @params = new object[] { publicKey, 1000000000 } // 1 SOL in lamports
+            };
+
+            var jsonRequest = JsonSerializer.Serialize(airdropRequest);
+            var content = new StringContent(jsonRequest, Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync(_config.GetActiveRpcUrl(), content);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Airdrop request failed with status: {StatusCode}", response.StatusCode);
+                return false;
+            }
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            using var document = JsonDocument.Parse(responseContent);
+            var root = document.RootElement;
+
+            if (root.TryGetProperty("error", out var errorElement))
+            {
+                var errorMessage = errorElement.GetProperty("message").GetString();
+                _logger.LogWarning("Airdrop failed: {Error}", errorMessage);
+                return false;
+            }
+
+            if (root.TryGetProperty("result", out var result))
+            {
+                var signature = result.GetString();
+                _logger.LogInformation("✅ Airdrop successful, signature: {Signature}", signature);
+                
+                // Confirm the airdrop transaction like the working JavaScript code
+                var confirmationSuccess = await ConfirmTransactionAsync(signature);
+                if (confirmationSuccess)
+                {
+                    _logger.LogInformation("✅ Airdrop transaction confirmed");
+                    return true;
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ Airdrop transaction confirmation failed, but continuing anyway");
+                    await Task.Delay(2000); // Fallback delay
+                    return true;
+                }
+            }
+
+            _logger.LogWarning("Unexpected airdrop response format");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to fund account {PublicKey}", publicKey);
+            return false;
+        }
+    }
+
+    private async Task<bool> ConfirmTransactionAsync(string signature)
+    {
+        try
+        {
+            _logger.LogDebug("Confirming transaction: {Signature}", signature);
+            
+            // Get latest blockhash for confirmation
+            var latestBlockhash = await GetLatestBlockhashStringAsync();
+            
+            var confirmRequest = new
+            {
+                jsonrpc = "2.0",
+                id = 1,
+                method = "confirmTransaction",
+                @params = new object[]
+                {
+                    new
+                    {
+                        signature = signature,
+                        blockhash = latestBlockhash,
+                        lastValidBlockHeight = (object)null // Let RPC determine this
+                    },
+                    "confirmed"
+                }
+            };
+
+            var jsonRequest = JsonSerializer.Serialize(confirmRequest);
+            var content = new StringContent(jsonRequest, Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync(_config.GetActiveRpcUrl(), content);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Transaction confirmation request failed with status: {StatusCode}", response.StatusCode);
+                return false;
+            }
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            using var document = JsonDocument.Parse(responseContent);
+            var root = document.RootElement;
+
+            if (root.TryGetProperty("error", out var errorElement))
+            {
+                var errorMessage = errorElement.GetProperty("message").GetString();
+                _logger.LogWarning("Transaction confirmation failed: {Error}", errorMessage);
+                return false;
+            }
+
+            if (root.TryGetProperty("result", out var result))
+            {
+                var confirmed = result.TryGetProperty("value", out var value) && 
+                               value.ValueKind == JsonValueKind.Array &&
+                               value.GetArrayLength() > 0 &&
+                               value[0].TryGetProperty("confirmationStatus", out var status) &&
+                               status.GetString() == "confirmed";
+                
+                return confirmed;
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to confirm transaction {Signature}", signature);
+            return false;
+        }
+    }
+
+    private async Task<string> GetLatestBlockhashStringAsync()
+    {
+        try
+        {
+            var request = new
+            {
+                jsonrpc = "2.0",
+                id = 1,
+                method = "getLatestBlockhash",
+                @params = new object[] { new { commitment = "confirmed" } }
+            };
+
+            var jsonRequest = JsonSerializer.Serialize(request);
+            var content = new StringContent(jsonRequest, Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync(_config.GetActiveRpcUrl(), content);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Failed to get latest blockhash string, using dummy");
+                return "11111111111111111111111111111111"; // Return dummy blockhash
+            }
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            using var document = JsonDocument.Parse(responseContent);
+            var root = document.RootElement;
+
+            if (root.TryGetProperty("result", out var result) &&
+                result.TryGetProperty("value", out var value) &&
+                value.TryGetProperty("blockhash", out var blockhashProperty))
+            {
+                var blockhashBase58 = blockhashProperty.GetString();
+                if (!string.IsNullOrEmpty(blockhashBase58))
+                {
+                    _logger.LogDebug("Got recent blockhash: {Blockhash}", blockhashBase58);
+                    return blockhashBase58;
+                }
+            }
+
+            _logger.LogWarning("Could not parse blockhash from response, using dummy");
+            return "11111111111111111111111111111111";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting latest blockhash string, using dummy");
+            return "11111111111111111111111111111111";
+        }
     }
 
     private async Task<byte[]> GetLatestBlockhashAsync()
