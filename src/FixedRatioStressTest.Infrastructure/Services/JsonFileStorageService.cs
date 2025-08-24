@@ -442,10 +442,16 @@ public class JsonFileStorageService : IStorageService
         var pools = await LoadRealPoolsAsync();
         var initialCount = pools.Count;
         
+        // Find the pool to backup before deletion
+        var poolToDelete = pools.FirstOrDefault(p => p.PoolId == poolId);
+        
         pools.RemoveAll(p => p.PoolId == poolId);
         
-        if (pools.Count < initialCount)
+        if (pools.Count < initialCount && poolToDelete != null)
         {
+            // Create backup before deletion
+            await BackupDeletedPoolAsync(poolToDelete);
+            
             var filePath = Path.Combine(_dataDirectory, "real_pools.json");
             
             try
@@ -459,6 +465,36 @@ public class JsonFileStorageService : IStorageService
                 _logger.LogError(ex, "Failed to delete real pool from {FilePath}", filePath);
                 throw;
             }
+        }
+    }
+    
+    private async Task BackupDeletedPoolAsync(RealPoolData pool)
+    {
+        try
+        {
+            // Create deleted_pools directory if it doesn't exist
+            var deletedPoolsDir = Path.Combine(_dataDirectory, "deleted_pools");
+            if (!Directory.Exists(deletedPoolsDir))
+            {
+                Directory.CreateDirectory(deletedPoolsDir);
+                _logger.LogDebug("Created deleted_pools directory: {Directory}", deletedPoolsDir);
+            }
+            
+            // Create filename with timestamp
+            var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss");
+            var backupFileName = $"pool_{pool.PoolId}_{timestamp}.json";
+            var backupFilePath = Path.Combine(deletedPoolsDir, backupFileName);
+            
+            // Save the pool data
+            var json = JsonSerializer.Serialize(pool, _jsonOptions);
+            await File.WriteAllTextAsync(backupFilePath, json);
+            
+            _logger.LogInformation("📁 Backed up deleted pool {PoolId} to {FileName}", pool.PoolId, backupFileName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to backup deleted pool {PoolId}", pool.PoolId);
+            // Don't throw - backup failure shouldn't prevent deletion
         }
     }
 
@@ -544,6 +580,13 @@ public class JsonFileStorageService : IStorageService
         if (!Directory.Exists(statsDirectory))
         {
             Directory.CreateDirectory(statsDirectory);
+        }
+        
+        // Ensure deleted_pools subdirectory exists for backup of deleted pools
+        var deletedPoolsDirectory = Path.Combine(_dataDirectory, "deleted_pools");
+        if (!Directory.Exists(deletedPoolsDirectory))
+        {
+            Directory.CreateDirectory(deletedPoolsDirectory);
         }
     }
 

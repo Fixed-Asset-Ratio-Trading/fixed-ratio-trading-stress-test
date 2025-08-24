@@ -427,16 +427,24 @@ public async Task<List<string>> GetOrCreateManagedPoolsAsync(int targetPoolCount
         {
             if (!activePoolIds.Contains(rp.PoolId))
             {
-                var exists = await ValidatePoolExistsOnBlockchainAsync(rp.PoolId);
-                if (exists)
+                try
                 {
-                    _logger.LogDebug("♻️ Auto-importing saved pool into active set: {PoolId}", rp.PoolId);
-                    activePoolIds.Add(rp.PoolId);
+                    var exists = await ValidatePoolExistsOnBlockchainAsync(rp.PoolId);
+                    if (exists)
+                    {
+                        _logger.LogDebug("♻️ Auto-importing saved pool into active set: {PoolId}", rp.PoolId);
+                        activePoolIds.Add(rp.PoolId);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("🗑️ Removing saved pool not found on-chain: {PoolId}", rp.PoolId);
+                        await _storageService.DeleteRealPoolAsync(rp.PoolId);
+                    }
                 }
-                else
+                catch (System.Net.Http.HttpRequestException)
                 {
-                    _logger.LogWarning("🗑️ Removing saved pool not found on-chain: {PoolId}", rp.PoolId);
-                    await _storageService.DeleteRealPoolAsync(rp.PoolId);
+                    // Connection error - don't delete the pool, but also don't import it
+                    _logger.LogWarning("⚠️ Cannot validate pool {PoolId} due to connection error - skipping import", rp.PoolId);
                 }
             }
         }
@@ -932,6 +940,12 @@ public async Task CleanupInvalidPoolsAsync()
                         // Remove invalid pool from storage
                         await _storageService.DeleteRealPoolAsync(existingPool.PoolId);
                     }
+                }
+                catch (System.Net.Http.HttpRequestException httpEx)
+                {
+                    // Connection error - don't delete the pool, just create a new one
+                    _logger.LogWarning("⚠️ Cannot validate existing pool {PoolId} due to connection error - will create new pool but keep existing data", existingPool.PoolId);
+                    // Don't delete the pool data since we can't verify
                 }
                 catch (Exception ex)
                 {
@@ -2415,6 +2429,12 @@ public async Task CleanupInvalidPoolsAsync()
                 _logger.LogDebug("Pool {PoolId} validated on blockchain", poolId);
                 return true;
             }
+            catch (System.Net.Http.HttpRequestException httpEx)
+            {
+                // Connection error - cannot determine pool existence
+                _logger.LogWarning("⚠️ Cannot validate pool {PoolId} - connection error: {Message}", poolId, httpEx.Message);
+                throw; // Re-throw to indicate we cannot determine pool existence
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to validate pool {PoolId} on blockchain", poolId);
@@ -2573,16 +2593,25 @@ public async Task CleanupInvalidPoolsAsync()
                 
                 foreach (var pool in savedPools)
                 {
-                    var exists = await ValidatePoolExistsOnBlockchainAsync(pool.PoolId);
-                    if (exists)
+                    try
                     {
-                        validPools.Add(pool);
-                        _logger.LogDebug("✅ Pool {PoolId} validated", pool.PoolId);
+                        var exists = await ValidatePoolExistsOnBlockchainAsync(pool.PoolId);
+                        if (exists)
+                        {
+                            validPools.Add(pool);
+                            _logger.LogDebug("✅ Pool {PoolId} validated", pool.PoolId);
+                        }
+                        else
+                        {
+                            invalidPoolIds.Add(pool.PoolId);
+                            _logger.LogWarning("❌ Pool {PoolId} not found on blockchain - will be removed", pool.PoolId);
+                        }
                     }
-                    else
+                    catch (System.Net.Http.HttpRequestException)
                     {
-                        invalidPoolIds.Add(pool.PoolId);
-                        _logger.LogWarning("❌ Pool {PoolId} not found on blockchain - will be removed", pool.PoolId);
+                        // Connection error - don't delete the pool
+                        _logger.LogWarning("⚠️ Cannot validate pool {PoolId} due to connection error - keeping pool data", pool.PoolId);
+                        validPools.Add(pool); // Keep the pool since we can't verify
                     }
                 }
                 
