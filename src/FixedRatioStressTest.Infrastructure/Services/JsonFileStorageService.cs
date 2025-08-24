@@ -40,6 +40,9 @@ public class JsonFileStorageService : IStorageService
         };
 
         EnsureDirectoriesExist();
+        
+        // Migrate existing statistics from shared file to individual files if needed
+        _ = Task.Run(async () => await MigrateStatisticsToIndividualFilesAsync());
     }
 
     public async Task SaveThreadConfigAsync(string threadId, ThreadConfig config)
@@ -125,6 +128,9 @@ public class JsonFileStorageService : IStorageService
                     File.Move(tempFile, threadsFile);
                 
                 _logger.LogDebug("Removed thread {ThreadId} from storage", threadId);
+                
+                // Clean up the individual thread statistics file
+                await DeleteThreadStatisticsAsync(threadId);
             }
             else
             {
@@ -142,13 +148,11 @@ public class JsonFileStorageService : IStorageService
         await _fileLock.WaitAsync();
         try
         {
-            var statsFile = Path.Combine(_dataDirectory, "statistics.json");
+            var statsDirectory = Path.Combine(_dataDirectory, "stats");
+            var statsFile = Path.Combine(statsDirectory, $"{threadId}.json");
             var tempFile = $"{statsFile}.tmp";
 
-            var allStats = await LoadAllStatisticsAsync();
-            allStats[threadId] = statistics;
-
-            var json = JsonSerializer.Serialize(new { statistics = allStats }, _jsonOptions);
+            var json = JsonSerializer.Serialize(statistics, _jsonOptions);
             await File.WriteAllTextAsync(tempFile, json);
 
             if (File.Exists(statsFile))
@@ -164,8 +168,23 @@ public class JsonFileStorageService : IStorageService
 
     public async Task<ThreadStatistics> LoadThreadStatisticsAsync(string threadId)
     {
-        var allStats = await LoadAllStatisticsAsync();
-        return allStats.GetValueOrDefault(threadId, new ThreadStatistics());
+        var statsDirectory = Path.Combine(_dataDirectory, "stats");
+        var statsFile = Path.Combine(statsDirectory, $"{threadId}.json");
+        
+        if (!File.Exists(statsFile))
+            return new ThreadStatistics();
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(statsFile);
+            var statistics = JsonSerializer.Deserialize<ThreadStatistics>(json, _jsonOptions);
+            return statistics ?? new ThreadStatistics();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load statistics for thread {ThreadId}, returning empty stats", threadId);
+            return new ThreadStatistics();
+        }
     }
 
     public async Task AddThreadErrorAsync(string threadId, ThreadError error)
@@ -182,6 +201,27 @@ public class JsonFileStorageService : IStorageService
         }
 
         await SaveThreadStatisticsAsync(threadId, statistics);
+    }
+
+    public async Task DeleteThreadStatisticsAsync(string threadId)
+    {
+        try
+        {
+            var statsDirectory = Path.Combine(_dataDirectory, "stats");
+            var statsFile = Path.Combine(statsDirectory, $"{threadId}.json");
+            
+            if (File.Exists(statsFile))
+            {
+                File.Delete(statsFile);
+                _logger.LogDebug("Deleted statistics file for thread {ThreadId}", threadId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to delete statistics file for thread {ThreadId}", threadId);
+        }
+        
+        await Task.CompletedTask;
     }
 
     public async Task<List<string>> LoadActivePoolIdsAsync()
@@ -490,27 +530,78 @@ public class JsonFileStorageService : IStorageService
         }
     }
 
-    private async Task<Dictionary<string, ThreadStatistics>> LoadAllStatisticsAsync()
-    {
-        var statsFile = Path.Combine(_dataDirectory, "statistics.json");
-        if (!File.Exists(statsFile))
-            return new Dictionary<string, ThreadStatistics>();
 
-        var json = await File.ReadAllTextAsync(statsFile);
-        using var doc = JsonDocument.Parse(json);
-        if (doc.RootElement.TryGetProperty("statistics", out var statsElement))
-        {
-            var dict = statsElement.Deserialize<Dictionary<string, ThreadStatistics>>(_jsonOptions);
-            return dict ?? new Dictionary<string, ThreadStatistics>();
-        }
-        return new Dictionary<string, ThreadStatistics>();
-    }
 
     private void EnsureDirectoriesExist()
     {
         if (!Directory.Exists(_dataDirectory))
         {
             Directory.CreateDirectory(_dataDirectory);
+        }
+        
+        // Ensure stats subdirectory exists for individual thread statistics
+        var statsDirectory = Path.Combine(_dataDirectory, "stats");
+        if (!Directory.Exists(statsDirectory))
+        {
+            Directory.CreateDirectory(statsDirectory);
+        }
+    }
+
+    private async Task MigrateStatisticsToIndividualFilesAsync()
+    {
+        try
+        {
+            var oldStatsFile = Path.Combine(_dataDirectory, "statistics.json");
+            if (!File.Exists(oldStatsFile))
+                return;
+
+            _logger.LogInformation("Migrating thread statistics from shared file to individual files...");
+
+            // Read the old statistics file
+            var json = await File.ReadAllTextAsync(oldStatsFile);
+            using var doc = JsonDocument.Parse(json);
+            
+            if (doc.RootElement.TryGetProperty("statistics", out var statsElement))
+            {
+                var allStats = statsElement.Deserialize<Dictionary<string, ThreadStatistics>>(_jsonOptions);
+                if (allStats != null)
+                {
+                    var migratedCount = 0;
+                    foreach (var kvp in allStats)
+                    {
+                        var threadId = kvp.Key;
+                        var statistics = kvp.Value;
+                        
+                        // Save to individual file
+                        var statsDirectory = Path.Combine(_dataDirectory, "stats");
+                        var individualStatsFile = Path.Combine(statsDirectory, $"{threadId}.json");
+                        
+                        if (!File.Exists(individualStatsFile))
+                        {
+                            var individualJson = JsonSerializer.Serialize(statistics, _jsonOptions);
+                            await File.WriteAllTextAsync(individualStatsFile, individualJson);
+                            migratedCount++;
+                        }
+                    }
+                    
+                    if (migratedCount > 0)
+                    {
+                        _logger.LogInformation("Migrated {Count} thread statistics to individual files", migratedCount);
+                        
+                        // Rename the old file to keep as backup
+                        var backupFile = Path.Combine(_dataDirectory, "statistics.json.backup");
+                        if (!File.Exists(backupFile))
+                        {
+                            File.Move(oldStatsFile, backupFile);
+                            _logger.LogInformation("Backed up original statistics file to statistics.json.backup");
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to migrate statistics to individual files");
         }
     }
 }

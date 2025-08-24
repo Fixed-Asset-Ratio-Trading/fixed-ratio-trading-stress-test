@@ -1460,7 +1460,8 @@ public async Task CleanupInvalidPoolsAsync()
             Wallet wallet, 
             string poolId, 
             TokenType tokenType, 
-            ulong amountInBasisPoints)
+            ulong amountInBasisPoints,
+            string? threadId = null)
         {
             try
             {
@@ -1470,8 +1471,17 @@ public async Task CleanupInvalidPoolsAsync()
                 var transaction = await _transactionBuilder.BuildDepositTransactionAsync(
                     wallet, pool, tokenType, amountInBasisPoints);
                 
-                // Send transaction
-                var signature = await SendTransactionAsync(transaction);
+                // Create rebuild function for retries with fresh data
+                Func<Task<byte[]>> rebuildTransactionFunc = async () =>
+                {
+                    _logger.LogDebug("🔄 Rebuilding deposit transaction with fresh pool state and blockhash");
+                    var freshPool = await GetPoolStateAsync(poolId);
+                    return await _transactionBuilder.BuildDepositTransactionAsync(
+                        wallet, freshPool, tokenType, amountInBasisPoints);
+                };
+                
+                // Send transaction with retry logic
+                var signature = await SendTransactionWithRetryAsync(transaction, rebuildTransactionFunc, threadId);
                 
                 // Confirm transaction
                 await ConfirmTransactionAsync(signature);
@@ -1500,7 +1510,8 @@ public async Task CleanupInvalidPoolsAsync()
             Wallet wallet, 
             string poolId, 
             TokenType tokenType, 
-            ulong lpTokenAmountToBurn)
+            ulong lpTokenAmountToBurn,
+            string? threadId = null)
         {
             try
             {
@@ -1510,8 +1521,17 @@ public async Task CleanupInvalidPoolsAsync()
                 var transaction = await _transactionBuilder.BuildWithdrawalTransactionAsync(
                     wallet, pool, tokenType, lpTokenAmountToBurn);
                 
-                // Send transaction
-                var signature = await SendTransactionAsync(transaction);
+                // Create rebuild function for retries with fresh data
+                Func<Task<byte[]>> rebuildTransactionFunc = async () =>
+                {
+                    _logger.LogDebug("🔄 Rebuilding withdrawal transaction with fresh pool state and blockhash");
+                    var freshPool = await GetPoolStateAsync(poolId);
+                    return await _transactionBuilder.BuildWithdrawalTransactionAsync(
+                        wallet, freshPool, tokenType, lpTokenAmountToBurn);
+                };
+                
+                // Send transaction with retry logic
+                var signature = await SendTransactionWithRetryAsync(transaction, rebuildTransactionFunc, threadId);
                 
                 // Confirm transaction
                 await ConfirmTransactionAsync(signature);
@@ -1541,7 +1561,8 @@ public async Task CleanupInvalidPoolsAsync()
             string poolId, 
             SwapDirection direction, 
             ulong inputAmountBasisPoints, 
-            ulong minimumOutputBasisPoints)
+            ulong minimumOutputBasisPoints,
+            string? threadId = null)
         {
             try
             {
@@ -1556,12 +1577,21 @@ public async Task CleanupInvalidPoolsAsync()
                     throw new InvalidOperationException($"Output amount {swapCalc.OutputAmount} is less than minimum {minimumOutputBasisPoints}");
                 }
                 
-                // Build swap transaction
+                // Build initial swap transaction
                 var transaction = await _transactionBuilder.BuildSwapTransactionAsync(
                     wallet, pool, direction, inputAmountBasisPoints, minimumOutputBasisPoints);
                 
-                // Send transaction
-                var signature = await SendTransactionAsync(transaction);
+                // Create rebuild function for retries with fresh data
+                Func<Task<byte[]>> rebuildTransactionFunc = async () =>
+                {
+                    _logger.LogDebug("🔄 Rebuilding swap transaction with fresh pool state and blockhash");
+                    var freshPool = await GetPoolStateAsync(poolId);
+                    return await _transactionBuilder.BuildSwapTransactionAsync(
+                        wallet, freshPool, direction, inputAmountBasisPoints, minimumOutputBasisPoints);
+                };
+                
+                // Send transaction with retry logic
+                var signature = await SendTransactionWithRetryAsync(transaction, rebuildTransactionFunc, threadId);
                 
                 // Confirm transaction
                 await ConfirmTransactionAsync(signature);
@@ -1615,14 +1645,24 @@ public async Task CleanupInvalidPoolsAsync()
             Wallet fromWallet, 
             string toWalletAddress, 
             string tokenMint, 
-            ulong amount)
+            ulong amount,
+            string? threadId = null)
         {
             try
             {
                 var transaction = await _transactionBuilder.BuildTransferTransactionAsync(
                     fromWallet, toWalletAddress, tokenMint, amount);
                 
-                var signature = await SendTransactionAsync(transaction);
+                // Create rebuild function for retries with fresh data
+                Func<Task<byte[]>> rebuildTransactionFunc = async () =>
+                {
+                    _logger.LogDebug("🔄 Rebuilding transfer transaction with fresh blockhash");
+                    return await _transactionBuilder.BuildTransferTransactionAsync(
+                        fromWallet, toWalletAddress, tokenMint, amount);
+                };
+                
+                // Send transaction with retry logic
+                var signature = await SendTransactionWithRetryAsync(transaction, rebuildTransactionFunc, threadId);
                 await ConfirmTransactionAsync(signature);
                 
                 _logger.LogDebug("Transferred {Amount} tokens to {Address}", amount, toWalletAddress);
@@ -2152,6 +2192,118 @@ public async Task CleanupInvalidPoolsAsync()
                 _logger.LogError(ex, "Failed to send transaction");
                 throw;
             }
+        }
+
+        public async Task<string> SendTransactionWithRetryAsync(byte[] transaction, Func<Task<byte[]>>? rebuildTransactionFunc = null, string? threadId = null)
+        {
+            var maxRetries = SolanaConfiguration.TRANSACTION_MAX_RETRIES;
+            var finalRetryDelayMs = SolanaConfiguration.TRANSACTION_FINAL_RETRY_DELAY_MS;
+            var standardRetryDelayMs = 3000; // 3 seconds between first 4 retries
+            var threadPrefix = !string.IsNullOrEmpty(threadId) ? $"[{threadId}] " : "";
+            
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    // Always use fresh transaction data for retries (including first attempt with fresh data)
+                    byte[] currentTransaction = transaction;
+                    if (rebuildTransactionFunc != null)
+                    {
+                        if (attempt == 1)
+                        {
+                            _logger.LogDebug("{ThreadPrefix}🔄 Attempt {Attempt}/{MaxRetries}: Starting with fresh contract data", threadPrefix, attempt, maxRetries);
+                        }
+                        else
+                        {
+                            _logger.LogDebug("{ThreadPrefix}🔄 Retry {Attempt}/{MaxRetries}: Rebuilding transaction with fresh contract data", threadPrefix, attempt, maxRetries);
+                        }
+                        currentTransaction = await rebuildTransactionFunc();
+                    }
+                    
+                    var result = await _rpcClient.SendTransactionAsync(currentTransaction);
+                    if (result.WasRequestSuccessfullyHandled)
+                    {
+                        if (attempt > 1)
+                        {
+                            _logger.LogInformation("{ThreadPrefix}✅ Transaction succeeded on retry {Attempt}/{MaxRetries}", threadPrefix, attempt, maxRetries);
+                        }
+                        return result.Result;
+                    }
+                    
+                    _logger.LogWarning("{ThreadPrefix}❌ Transaction attempt {Attempt}/{MaxRetries} failed. Reason: {Reason}, Http: {Status}", 
+                        threadPrefix, attempt, maxRetries, result.Reason, result.HttpStatusCode);
+                    
+                    // Show simulation logs for debugging
+                    try
+                    {
+                        var sim = await _rpcClient.SimulateTransactionAsync(currentTransaction, sigVerify: false, Solnet.Rpc.Types.Commitment.Processed, replaceRecentBlockhash: true);
+                        if (sim.WasRequestSuccessfullyHandled)
+                        {
+                            var logs = sim.Result?.Value?.Logs ?? Array.Empty<string>();
+                            if (logs.Length > 0)
+                            {
+                                _logger.LogDebug("{ThreadPrefix}Simulation logs for attempt {Attempt}:\n{Logs}", threadPrefix, attempt, string.Join("\n", logs));
+                            }
+                        }
+                    }
+                    catch (Exception simEx)
+                    {
+                        _logger.LogDebug(simEx, "{ThreadPrefix}Simulation failed for attempt {Attempt}", threadPrefix, attempt);
+                    }
+                    
+                    // If this is the last attempt, throw the error
+                    if (attempt == maxRetries)
+                    {
+                        throw new InvalidOperationException($"{threadPrefix}Transaction failed after {maxRetries} attempts. Final reason: {result.Reason}");
+                    }
+                    
+                    // Delay before next retry
+                    if (attempt < maxRetries)
+                    {
+                        if (attempt == maxRetries - 1)
+                        {
+                            // Special 15-second delay before final attempt
+                            _logger.LogInformation("{ThreadPrefix}⏳ Final retry attempt: waiting {DelayMs}ms before last try", threadPrefix, finalRetryDelayMs);
+                            await Task.Delay(finalRetryDelayMs);
+                        }
+                        else
+                        {
+                            // 3-second delay between first 4 retries
+                            _logger.LogDebug("{ThreadPrefix}⏳ Waiting {DelayMs}ms before retry {NextAttempt}/{MaxRetries}", threadPrefix, standardRetryDelayMs, attempt + 1, maxRetries);
+                            await Task.Delay(standardRetryDelayMs);
+                        }
+                    }
+                }
+                catch (Exception ex) when (attempt < maxRetries)
+                {
+                    _logger.LogWarning(ex, "{ThreadPrefix}❌ Transaction attempt {Attempt}/{MaxRetries} threw exception", threadPrefix, attempt, maxRetries);
+                    
+                    // If this is the last attempt, re-throw
+                    if (attempt == maxRetries)
+                    {
+                        throw;
+                    }
+                    
+                    // Delay before next retry
+                    if (attempt < maxRetries)
+                    {
+                        if (attempt == maxRetries - 1)
+                        {
+                            // Special 15-second delay before final attempt
+                            _logger.LogInformation("{ThreadPrefix}⏳ Final retry attempt: waiting {DelayMs}ms before last try", threadPrefix, finalRetryDelayMs);
+                            await Task.Delay(finalRetryDelayMs);
+                        }
+                        else
+                        {
+                            // 3-second delay between first 4 retries
+                            _logger.LogDebug("{ThreadPrefix}⏳ Waiting {DelayMs}ms before retry {NextAttempt}/{MaxRetries}", threadPrefix, standardRetryDelayMs, attempt + 1, maxRetries);
+                            await Task.Delay(standardRetryDelayMs);
+                        }
+                    }
+                }
+            }
+            
+            throw new InvalidOperationException($"{threadPrefix}Transaction failed after {maxRetries} attempts");
         }
 
         public async Task<bool> ConfirmTransactionAsync(string signature, int maxRetries = 3)

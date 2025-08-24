@@ -39,6 +39,10 @@ namespace FixedRatioStressTest.Common.Models
         // SOL balance thresholds (in lamports)
         public const ulong MIN_SOL_BALANCE = 100_000_000; // 0.1 SOL
         public const ulong SOL_AIRDROP_AMOUNT = 1_000_000_000; // 1 SOL
+        
+        // Transaction retry configuration
+        public const int TRANSACTION_MAX_RETRIES = 5;
+        public const int TRANSACTION_FINAL_RETRY_DELAY_MS = 15_000; // 15 seconds
     }
     
     public class SolanaConfig

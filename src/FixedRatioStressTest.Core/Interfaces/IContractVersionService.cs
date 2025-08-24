@@ -41,7 +41,7 @@ public class ContractVersionResult
     public bool IsVersionTooHigh { get; set; }
     
     /// <summary>
-    /// True if the service should shut down due to version mismatch or unsupported version
+    /// True if the service should shut down due to version mismatch, unsupported version, or connection issues
     /// </summary>
-    public bool ShouldShutdown => !IsValid && !string.IsNullOrEmpty(DeployedVersion);
+    public bool ShouldShutdown { get; set; }
 }

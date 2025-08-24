@@ -75,7 +75,8 @@ public interface ISolanaClientService
         Wallet wallet, 
         string poolId, 
         TokenType tokenType, 
-        ulong amountInBasisPoints);
+        ulong amountInBasisPoints,
+        string? threadId = null);
 
     // ATA utilities
     Task EnsureAtaExistsAsync(Wallet wallet, string mintAddress);
@@ -85,7 +86,8 @@ public interface ISolanaClientService
         Wallet wallet, 
         string poolId, 
         TokenType tokenType, 
-        ulong lpTokenAmountToBurn);
+        ulong lpTokenAmountToBurn,
+        string? threadId = null);
     
     // Swap operations
     Task<SwapResult> ExecuteSwapAsync(
@@ -93,7 +95,8 @@ public interface ISolanaClientService
         string poolId, 
         SwapDirection direction, 
         ulong inputAmountBasisPoints, 
-        ulong minimumOutputBasisPoints);
+        ulong minimumOutputBasisPoints,
+        string? threadId = null);
     
     // Airdrop and transfers
     Task<string> RequestAirdropAsync(string walletAddress, ulong lamports);
@@ -101,7 +104,8 @@ public interface ISolanaClientService
         Wallet fromWallet, 
         string toWalletAddress, 
         string tokenMint, 
-        ulong amount);
+        ulong amount,
+        string? threadId = null);
     
     // Token minting (for testing)
     Task<string> MintTokensAsync(string tokenMint, string recipientAddress, ulong amount);

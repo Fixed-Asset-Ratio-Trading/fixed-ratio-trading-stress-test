@@ -79,6 +79,7 @@ public class ContractVersionService : IContractVersionService
             {
                 result.IsValid = false;
                 result.IsVersionTooHigh = true;
+                result.ShouldShutdown = true;
                 result.ErrorMessage = $"Contract version {deployedVersion} is not supported. This service supports versions up to {_maxSupportedVersion}. Version 0.20.x+ contains breaking changes.";
                 _logger.LogError("❌ Contract version validation FAILED - VERSION TOO HIGH: {ErrorMessage}", result.ErrorMessage);
                 return result;
@@ -94,6 +95,7 @@ public class ContractVersionService : IContractVersionService
             }
             else
             {
+                result.ShouldShutdown = true;
                 result.ErrorMessage = $"Contract version mismatch. Deployed: {deployedVersion}, Expected: {_expectedVersion}";
                 _logger.LogError("❌ Contract version validation FAILED: {ErrorMessage}", result.ErrorMessage);
             }
@@ -107,6 +109,7 @@ public class ContractVersionService : IContractVersionService
                 DeployedVersion = null,
                 ExpectedVersion = _expectedVersion,
                 IsValid = false,
+                ShouldShutdown = true,
                 ErrorMessage = $"Contract version validation failed with exception: {ex.Message}"
             };
 

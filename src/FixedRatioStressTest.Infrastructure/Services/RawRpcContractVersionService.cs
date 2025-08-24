@@ -57,11 +57,11 @@ public class RawRpcContractVersionService : IContractVersionService
 
             if (string.IsNullOrEmpty(deployedVersion))
             {
-                // Since we've proven the transaction format works and program responds,
-                // we'll allow the service to continue with a warning
-                result.IsValid = true; // Infrastructure is working
-                result.ErrorMessage = "Contract version service infrastructure verified. GetVersion execution requires production setup for full version retrieval.";
-                _logger.LogWarning("⚠️ Contract version not retrieved, but service infrastructure is working: {ErrorMessage}", result.ErrorMessage);
+                // Cannot retrieve version - this is a critical failure that should stop the application
+                result.IsValid = false;
+                result.ShouldShutdown = true;
+                result.ErrorMessage = "Cannot retrieve contract version from blockchain. This indicates RPC connection issues, contract deployment problems, or program ID configuration errors.";
+                _logger.LogCritical("❌ Contract version validation FAILED - cannot retrieve version: {ErrorMessage}", result.ErrorMessage);
                 return result;
             }
 
@@ -75,6 +75,7 @@ public class RawRpcContractVersionService : IContractVersionService
             {
                 result.IsValid = false;
                 result.IsVersionTooHigh = true;
+                result.ShouldShutdown = true;
                 result.ErrorMessage = $"Contract version {deployedVersion} is not supported. This service supports versions up to {_maxSupportedVersion}. Version 0.20.x+ contains breaking changes.";
                 _logger.LogError("❌ Contract version validation FAILED - VERSION TOO HIGH: {ErrorMessage}", result.ErrorMessage);
                 return result;
@@ -90,6 +91,7 @@ public class RawRpcContractVersionService : IContractVersionService
             }
             else
             {
+                result.ShouldShutdown = true;
                 result.ErrorMessage = $"Contract version mismatch. Deployed: {deployedVersion}, Expected: {_expectedVersion}";
                 _logger.LogError("❌ Contract version validation FAILED: {ErrorMessage}", result.ErrorMessage);
             }
@@ -104,6 +106,7 @@ public class RawRpcContractVersionService : IContractVersionService
                 ExpectedVersion = _expectedVersion,
                 MaxSupportedVersion = _maxSupportedVersion,
                 IsValid = false,
+                ShouldShutdown = true,
                 ErrorMessage = $"Contract version validation failed with exception: {ex.Message}"
             };
 

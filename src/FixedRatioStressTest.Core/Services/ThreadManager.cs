@@ -718,7 +718,7 @@ public class ThreadManager : IThreadManager
             
             // Submit swap transaction
             var result = await _solanaClient.ExecuteSwapAsync(
-                wallet, config.PoolId, swapDirection, swapAmount, minimumOutput);
+                wallet, config.PoolId, swapDirection, swapAmount, minimumOutput, config.ThreadId);
             
             _logger.LogDebug("Swap completed for thread {ThreadId}: {Input} input tokens -> {Output} output tokens, direction: {Direction}, signature: {Signature}", 
                 config.ThreadId, swapAmount, result.OutputTokens, swapDirection, result.TransactionSignature);
@@ -805,7 +805,7 @@ public class ThreadManager : IThreadManager
                         await _solanaClient.EnsureAtaExistsAsync(targetWallet, lpMint);
                         
                         await _solanaClient.TransferTokensAsync(
-                            sourceWallet, targetThread.PublicKey, lpMint, sharePerThread);
+                            sourceWallet, targetThread.PublicKey, lpMint, sharePerThread, sourceConfig.ThreadId);
                         
                         _logger.LogDebug("Shared {Amount} LP tokens from deposit thread {Source} to withdrawal thread {Target}", 
                             sharePerThread, sourceConfig.ThreadId, targetThread.ThreadId);
@@ -870,7 +870,7 @@ public class ThreadManager : IThreadManager
                         await _solanaClient.EnsureAtaExistsAsync(targetWallet, tokenMint);
                         
                         await _solanaClient.TransferTokensAsync(
-                            sourceWallet, targetThread.PublicKey, tokenMint, sharePerThread);
+                            sourceWallet, targetThread.PublicKey, tokenMint, sharePerThread, sourceConfig.ThreadId);
                         
                         _logger.LogDebug("Shared {Amount} tokens from withdrawal thread {Source} to deposit thread {Target}", 
                             sharePerThread, sourceConfig.ThreadId, targetThread.ThreadId);
@@ -970,7 +970,7 @@ public class ThreadManager : IThreadManager
             
             // Transfer tokens to opposite swap thread
             await _solanaClient.TransferTokensAsync(
-                sourceWallet, oppositeThread.PublicKey, tokenMint, tokensToShare);
+                sourceWallet, oppositeThread.PublicKey, tokenMint, tokensToShare, sourceConfig.ThreadId);
             
             _logger.LogInformation("Shared {Amount} tokens from swap thread {Source} ({SourceDir}) to {Target} ({TargetDir})", 
                 tokensToShare, sourceConfig.ThreadId, sourceConfig.SwapDirection, 
