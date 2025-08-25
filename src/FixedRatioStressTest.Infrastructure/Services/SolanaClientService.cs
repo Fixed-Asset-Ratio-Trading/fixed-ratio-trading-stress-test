@@ -1001,10 +1001,8 @@ public async Task CleanupInvalidPoolsAsync()
             var ratioWholeNumber = parameters.RatioWholeNumber ?? 1000;
             var ratioDirection = parameters.RatioDirection ?? "a_to_b";
 
-            var (ratioANumerator, ratioBDenominator) = ratioDirection == "a_to_b"
-                ? ((ulong)Math.Pow(10, tokenADecimals), ratioWholeNumber * (ulong)Math.Pow(10, tokenBDecimals))
-                : (ratioWholeNumber * (ulong)Math.Pow(10, tokenADecimals), (ulong)Math.Pow(10, tokenBDecimals));
-            
+            // FIXED: Use CalculateBasisPoints method that properly handles token ordering normalization
+            // This ensures ratios are calculated AFTER token reordering, not before
             var poolConfig = CreateNormalizedPoolConfig(
                 tokenAMint.MintAddress, tokenBMint.MintAddress, 
                 tokenADecimals, tokenBDecimals, 
@@ -1201,11 +1199,12 @@ public async Task CleanupInvalidPoolsAsync()
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Smart contract pool creation failed, but tokens are created");
-                poolCreationSignature = $"failed_{Guid.NewGuid():N}";
+                _logger.LogError(ex, "Smart contract pool creation failed");
+                // Don't save invalid pools - throw the exception to return error to caller
+                throw new InvalidOperationException($"Pool creation failed on smart contract: {ex.Message}", ex);
             }
             
-            // Step 5: Create real pool data (tokens exist regardless of pool creation success)
+            // Step 5: Create real pool data (only if smart contract creation succeeded)
             // IMPORTANT: Derive pool PDA using the SAME seeds as the transaction builder
             // - ordered token mints (lexicographic by raw bytes)
             // - basis points derived from ratio and decimals
@@ -1234,8 +1233,8 @@ public async Task CleanupInvalidPoolsAsync()
                 TokenBMint = tokenBMint.MintAddress,
                 TokenADecimals = tokenADecimals,
                 TokenBDecimals = tokenBDecimals,
-                RatioANumerator = ratioANumerator,
-                RatioBDenominator = ratioBDenominator,
+                RatioANumerator = bpRatioA,
+                RatioBDenominator = bpRatioB,
                 CreationSignature = poolCreationSignature,
                 CreatedAt = DateTime.UtcNow,
                 LastValidated = DateTime.UtcNow,
