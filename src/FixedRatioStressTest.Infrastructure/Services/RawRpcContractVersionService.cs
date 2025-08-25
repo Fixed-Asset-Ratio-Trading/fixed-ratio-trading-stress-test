@@ -22,6 +22,7 @@ public class RawRpcContractVersionService : IContractVersionService
     private readonly SolanaConfig _config;
     private readonly string _expectedVersion;
     private readonly string _maxSupportedVersion;
+    private readonly ISolanaClientService _solanaClient;
 
     // GetVersion instruction discriminator as per API documentation
     private const byte GET_VERSION_DISCRIMINATOR = 14;
@@ -29,9 +30,11 @@ public class RawRpcContractVersionService : IContractVersionService
 
     public RawRpcContractVersionService(
         IConfiguration configuration,
+        ISolanaClientService solanaClient,
         ILogger<RawRpcContractVersionService> logger)
     {
         _config = configuration.GetSection("SolanaConfiguration").Get<SolanaConfig>() ?? new SolanaConfig();
+        _solanaClient = solanaClient;
         _logger = logger;
         
         _httpClient = new HttpClient();
@@ -123,60 +126,32 @@ public class RawRpcContractVersionService : IContractVersionService
     {
         try
         {
-            _logger.LogInformation("🎯 Final GetVersion Test - Following JavaScript working pattern");
+            _logger.LogInformation("🎯 GetVersion Test - Using Core Wallet");
 
-            // Step 1: Try with signed transaction using ephemeral fee payer
-            _logger.LogInformation("🔧 Step 1: Simulation with ephemeral fee payer...");
+            // Get the core wallet that was initialized during startup
+            _logger.LogInformation("🔧 Step 1: Loading core wallet for version check...");
+            var coreWallet = await _solanaClient.GetOrCreateCoreWalletAsync();
             
-            var (transactionBase64, feePayerPubkey) = await CreateGetVersionTransactionWithBlockhashAsync();
-            var version = await TryGetVersionFromSimulation(transactionBase64, "ephemeral fee payer");
+            _logger.LogInformation("💰 Using core wallet: {PublicKey} (Balance: {Balance} SOL)", 
+                coreWallet.PublicKey, coreWallet.CurrentSolBalance / 1_000_000_000.0);
+            
+            // Check if core wallet has sufficient balance
+            if (coreWallet.CurrentSolBalance == 0)
+            {
+                _logger.LogWarning("⚠️ Core wallet is empty - version check may fail");
+            }
+
+            // Create transaction using core wallet
+            var (transactionBase64, _) = await CreateGetVersionTransactionWithCoreWalletAsync(coreWallet);
+            var version = await TryGetVersionFromSimulation(transactionBase64, "core wallet");
             
             if (!string.IsNullOrEmpty(version))
             {
+                _logger.LogInformation("🎉 SUCCESS! Contract version retrieved using core wallet: {Version}", version);
                 return version;
             }
-            
-            // Step 2: If AccountNotFound, try funding the ephemeral account and retry
-            _logger.LogInformation("🔧 Step 2: Funding ephemeral account and retrying...");
-            var fundingSuccess = await TryFundAccountAsync(feePayerPubkey);
-            if (fundingSuccess)
-            {
-                // Create a new transaction with a fresh ephemeral keypair (funding doesn't persist keypairs)
-                var (fundedTransactionBase64, fundedFeePayerPubkey) = await CreateGetVersionTransactionWithBlockhashAsync();
-                
-                // Fund this new account too
-                var secondFundingSuccess = await TryFundAccountAsync(fundedFeePayerPubkey);
-                if (secondFundingSuccess)
-                {
-                    version = await TryGetVersionFromSimulation(fundedTransactionBase64, "funded fee payer");
-                    
-                    if (!string.IsNullOrEmpty(version))
-                    {
-                        return version;
-                    }
-                }
-            }
 
-            // Step 2: Success validation - transaction format is correct and program responds
-            _logger.LogInformation("✅ SUCCESS: Contract version service validation complete!");
-            _logger.LogInformation("   - Transaction format is correct (no deserialization errors)");
-            _logger.LogInformation("   - Program {ProgramId} exists and responds to instructions", _config.ProgramId);
-            _logger.LogInformation("   - Raw RPC communication bypasses Solnet transaction issues");
-            _logger.LogInformation("   - GetVersion instruction (discriminator 14) is properly recognized");
-            
-            // For production contract version checking, this service can be enhanced to:
-            // 1. Use funded accounts for actual version retrieval
-            // 2. Parse program logs for version information
-            // 3. Implement fallback version detection methods
-            
-            // Return a default version to indicate the service is working
-            // In production, this would be enhanced to get the actual version
-            _logger.LogInformation("📋 Contract version service infrastructure verified successfully");
-
-            _logger.LogInformation("📊 RESULT: Transaction format is correct, program exists and is callable");
-            _logger.LogInformation("   The GetVersion instruction (discriminator 14) is properly formatted");
-            _logger.LogInformation("   Your program is deployed and responding to instruction calls");
-            
+            _logger.LogError("❌ Failed to retrieve contract version using core wallet");
             return null;
         }
         catch (Exception ex)
@@ -399,6 +374,45 @@ public class RawRpcContractVersionService : IContractVersionService
             transaction.Length, base64Transaction);
         
         return (base64Transaction, feePayerPublicKey);
+    }
+
+    private async Task<(string transactionBase64, string feePayerPubkey)> CreateGetVersionTransactionWithCoreWalletAsync(CoreWalletConfig coreWallet)
+    {
+        // Create a transaction using the core wallet as fee payer
+        var programId = new PublicKey(_config.ProgramId);
+        
+        // Restore the core wallet from its private key (convert from Base64)
+        var privateKeyBytes = Convert.FromBase64String(coreWallet.PrivateKey);
+        var coreWalletKeypair = _solanaClient.RestoreWallet(privateKeyBytes);
+        
+        _logger.LogInformation("✅ Transaction setup complete using core wallet");
+        _logger.LogInformation("   Program ID: {ProgramId}", _config.ProgramId);
+        _logger.LogInformation("   Instruction discriminator: 14 (0x0E)");
+        _logger.LogInformation("   Fee payer: {FeePayer} (Core Wallet)", coreWallet.PublicKey);
+        
+        // Create GetVersion instruction (no accounts required per API doc)
+        var instructionData = new byte[] { GET_VERSION_DISCRIMINATOR }; // [14]
+        var instruction = new TransactionInstruction
+        {
+            ProgramId = programId,
+            Keys = new List<AccountMeta>(), // Empty - GetVersion needs no accounts
+            Data = instructionData
+        };
+        
+        // Build and sign transaction using core wallet
+        var recentBlockhash = await GetLatestBlockhashStringAsync();
+        var transaction = new TransactionBuilder()
+            .SetFeePayer(coreWalletKeypair.Account.PublicKey)
+            .SetRecentBlockHash(recentBlockhash)
+            .AddInstruction(instruction)
+            .Build(coreWalletKeypair.Account);
+        
+        var base64Transaction = Convert.ToBase64String(transaction);
+        
+        _logger.LogDebug("Created signed GetVersion transaction with core wallet: {Length} bytes, Base64: {Base64}", 
+            transaction.Length, base64Transaction);
+        
+        return (base64Transaction, coreWallet.PublicKey);
     }
 
     private async Task<bool> TryFundAccountAsync(string publicKey)

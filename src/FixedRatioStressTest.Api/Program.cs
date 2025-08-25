@@ -110,9 +110,9 @@ builder.Services.AddSingleton(typeof(HighPerformanceObjectPool<>));
 // Register core application services
 builder.Services.AddSingleton<IStorageService, JsonFileStorageService>();
 builder.Services.AddSingleton<IComputeUnitManager, ComputeUnitManager>();
-builder.Services.AddSingleton<IContractVersionService, RawRpcContractVersionService>(); // Raw RPC validation
 builder.Services.AddSingleton<ISolanaClientService, SolanaClientService>();
 builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
+builder.Services.AddSingleton<IContractVersionService, RawRpcContractVersionService>(); // Raw RPC validation (depends on SolanaClientService)
 builder.Services.AddSingleton<IThreadManager, ThreadManager>();
 builder.Services.AddSingleton<IEmptyCommandHandler, EmptyCommandHandler>();
 
