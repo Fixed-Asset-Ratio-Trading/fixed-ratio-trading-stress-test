@@ -67,6 +67,7 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
             // Core wallet initialization (must run first). Loads/creates core wallet and handles localnet airdrops.
             new CoreWalletStartupService(
                 solanaClient: _solanaClientService,
+                storageService: _storageService,
                 configuration: _configuration,
                 logger: new Microsoft.Extensions.Logging.Abstractions.NullLogger<CoreWalletStartupService>()),
 

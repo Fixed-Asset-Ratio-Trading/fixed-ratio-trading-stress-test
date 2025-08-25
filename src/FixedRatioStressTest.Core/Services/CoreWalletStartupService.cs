@@ -14,15 +14,18 @@ namespace FixedRatioStressTest.Core.Services;
 public class CoreWalletStartupService : IHostedService
 {
     private readonly ISolanaClientService _solanaClient;
+    private readonly IStorageService _storageService;
     private readonly IConfiguration _configuration;
     private readonly ILogger<CoreWalletStartupService> _logger;
 
     public CoreWalletStartupService(
         ISolanaClientService solanaClient,
+        IStorageService storageService,
         IConfiguration configuration,
         ILogger<CoreWalletStartupService> logger)
     {
         _solanaClient = solanaClient;
+        _storageService = storageService;
         _configuration = configuration;
         _logger = logger;
     }
@@ -36,6 +39,19 @@ public class CoreWalletStartupService : IHostedService
             // Step 1: Load or create core wallet
             _logger.LogInformation("📂 Loading or creating core wallet...");
             var coreWallet = await _solanaClient.GetOrCreateCoreWalletAsync();
+            
+            // Step 1.5: Adjust minimum balance for localnet testing
+            var isLocalnet = IsLocalnetTesting();
+            if (isLocalnet)
+            {
+                // For localnet, 1 SOL is sufficient (version check + small operations)
+                coreWallet.MinimumSolBalance = SolanaConfiguration.SOL_AIRDROP_AMOUNT; // 1 SOL
+                _logger.LogDebug("🧪 Adjusted minimum balance for localnet: {MinBalance} SOL", 
+                    coreWallet.MinimumSolBalance / 1_000_000_000.0);
+                
+                // Save the updated configuration
+                await _storageService.SaveCoreWalletAsync(coreWallet);
+            }
             
             _logger.LogInformation("✅ Core wallet ready: {PublicKey}", coreWallet.PublicKey);
             _logger.LogInformation("💰 Current balance: {Balance} SOL ({Lamports} lamports)", 
