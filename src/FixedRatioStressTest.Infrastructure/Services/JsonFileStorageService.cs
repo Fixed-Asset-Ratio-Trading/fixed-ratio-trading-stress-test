@@ -113,11 +113,17 @@ public class JsonFileStorageService : IStorageService
             var threads = await LoadAllThreadsAsync() ?? new List<ThreadConfig>();
             var initialCount = threads.Count;
             
+            // Find the thread to backup before deletion
+            var threadToDelete = threads.FirstOrDefault(t => t.ThreadId == threadId);
+            
             // Remove the thread from the list
             threads.RemoveAll(t => t.ThreadId == threadId);
             
-            if (threads.Count < initialCount)
+            if (threads.Count < initialCount && threadToDelete != null)
             {
+                // Create backup before deletion
+                await BackupDeletedThreadAsync(threadToDelete);
+                
                 // Thread was found and removed, save the updated list
                 var json = JsonSerializer.Serialize(new { threads }, _jsonOptions);
                 await File.WriteAllTextAsync(tempFile, json);
@@ -452,6 +458,9 @@ public class JsonFileStorageService : IStorageService
             // Create backup before deletion
             await BackupDeletedPoolAsync(poolToDelete);
             
+            // Backup and delete all threads associated with this pool
+            await BackupAndDeleteThreadsForPoolAsync(poolId);
+            
             var filePath = Path.Combine(_dataDirectory, "real_pools.json");
             
             try
@@ -495,6 +504,107 @@ public class JsonFileStorageService : IStorageService
         {
             _logger.LogError(ex, "Failed to backup deleted pool {PoolId}", pool.PoolId);
             // Don't throw - backup failure shouldn't prevent deletion
+        }
+    }
+    
+    private async Task BackupDeletedThreadAsync(ThreadConfig thread)
+    {
+        try
+        {
+            // Create deleted_pools directory if it doesn't exist
+            var deletedPoolsDir = Path.Combine(_dataDirectory, "deleted_pools");
+            if (!Directory.Exists(deletedPoolsDir))
+            {
+                Directory.CreateDirectory(deletedPoolsDir);
+                _logger.LogDebug("Created deleted_pools directory: {Directory}", deletedPoolsDir);
+            }
+            
+            // Create filename with timestamp
+            var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss");
+            var backupFileName = $"thread_{thread.ThreadId}_{timestamp}.json";
+            var backupFilePath = Path.Combine(deletedPoolsDir, backupFileName);
+            
+            // Create backup data with thread config and statistics
+            ThreadStatistics? statistics = null;
+            try
+            {
+                statistics = await LoadThreadStatisticsAsync(thread.ThreadId).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not load statistics for thread {ThreadId} during backup", thread.ThreadId);
+            }
+            
+            var backupData = new
+            {
+                ThreadConfig = thread,
+                Statistics = statistics
+            };
+            
+            // Save the thread data
+            var json = JsonSerializer.Serialize(backupData, _jsonOptions);
+            await File.WriteAllTextAsync(backupFilePath, json);
+            
+            _logger.LogInformation("📁 Backed up deleted thread {ThreadId} to {FileName}", thread.ThreadId, backupFileName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to backup deleted thread {ThreadId}", thread.ThreadId);
+            // Don't throw - backup failure shouldn't prevent deletion
+        }
+    }
+    
+    private async Task BackupAndDeleteThreadsForPoolAsync(string poolId)
+    {
+        try
+        {
+            var allThreads = await LoadAllThreadsAsync();
+            var threadsForPool = allThreads.Where(t => t.PoolId == poolId).ToList();
+            
+            if (threadsForPool.Any())
+            {
+                _logger.LogInformation("🧹 Found {Count} threads associated with pool {PoolId}, backing up and deleting", 
+                    threadsForPool.Count, poolId);
+                
+                // Backup each thread before deletion
+                foreach (var thread in threadsForPool)
+                {
+                    await BackupDeletedThreadAsync(thread);
+                }
+                
+                // Remove threads from the main threads list
+                var remainingThreads = allThreads.Where(t => t.PoolId != poolId).ToList();
+                
+                // Save updated threads list
+                var threadsFile = Path.Combine(_dataDirectory, "threads.json");
+                var tempFile = $"{threadsFile}.tmp";
+                
+                var json = JsonSerializer.Serialize(new { threads = remainingThreads }, _jsonOptions);
+                await File.WriteAllTextAsync(tempFile, json);
+                
+                if (File.Exists(threadsFile))
+                    File.Replace(tempFile, threadsFile, $"{threadsFile}.backup");
+                else
+                    File.Move(tempFile, threadsFile);
+                
+                // Clean up individual thread statistics files
+                foreach (var thread in threadsForPool)
+                {
+                    await DeleteThreadStatisticsAsync(thread.ThreadId);
+                }
+                
+                _logger.LogInformation("✅ Successfully backed up and deleted {Count} threads for pool {PoolId}", 
+                    threadsForPool.Count, poolId);
+            }
+            else
+            {
+                _logger.LogDebug("No threads found associated with pool {PoolId}", poolId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to backup and delete threads for pool {PoolId}", poolId);
+            // Don't throw - backup failure shouldn't prevent pool deletion
         }
     }
 
