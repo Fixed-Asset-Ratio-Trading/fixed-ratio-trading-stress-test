@@ -2019,19 +2019,13 @@ public async Task CleanupInvalidPoolsAsync()
                     RatioDirection = ratioDirection
                 };
                 
-                // Apply "anchored to 1" rule from design documents
-                if (ratioDirection == "a_to_b")
-                {
-                    // Token A is anchored to 1 (10^decimals)
-                    poolConfig.RatioANumerator = (ulong)Math.Pow(10, tokenADecimals);
-                    poolConfig.RatioBDenominator = ratioWholeNumber * (ulong)Math.Pow(10, tokenBDecimals);
-                }
-                else // b_to_a
-                {
-                    // Token B is anchored to 1 (10^decimals)
-                    poolConfig.RatioBDenominator = (ulong)Math.Pow(10, tokenBDecimals);
-                    poolConfig.RatioANumerator = ratioWholeNumber * (ulong)Math.Pow(10, tokenADecimals);
-                }
+                // FIXED: Use CalculateBasisPoints method that properly handles token ordering normalization
+                // This ensures ratios are calculated correctly for the normalized token order
+                var (ratioANumerator, ratioBDenominator) = CalculateBasisPoints(
+                    tokenAMint, tokenBMint, tokenADecimals, tokenBDecimals, ratioWholeNumber, ratioDirection);
+                
+                poolConfig.RatioANumerator = ratioANumerator;
+                poolConfig.RatioBDenominator = ratioBDenominator;
                 
                 // Validate the pool ratio (safety mechanism from design docs)
                 ValidatePoolRatio(poolConfig, tokenADecimals, tokenBDecimals);
