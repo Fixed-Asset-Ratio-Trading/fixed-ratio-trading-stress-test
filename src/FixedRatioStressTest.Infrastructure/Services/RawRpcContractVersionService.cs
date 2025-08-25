@@ -354,9 +354,22 @@ public class RawRpcContractVersionService : IContractVersionService
         
         var programId = new PublicKey(_config.ProgramId);
         
-        // Generate ephemeral keypair for fee payer (like JS example)
-        var feePayerKeypair = new Account();
-        var feePayerPublicKey = feePayerKeypair.PublicKey.ToString();
+        // Use provided fee payer or generate ephemeral keypair
+        Account feePayerKeypair;
+        string feePayerPublicKey;
+        
+        if (!string.IsNullOrEmpty(feePayerPubkey))
+        {
+            // This should not happen in the current flow, but keeping for compatibility
+            feePayerKeypair = new Account();
+            feePayerPublicKey = feePayerKeypair.PublicKey.ToString();
+        }
+        else
+        {
+            // Generate ephemeral keypair for fee payer (like JS example)
+            feePayerKeypair = new Account();
+            feePayerPublicKey = feePayerKeypair.PublicKey.ToString();
+        }
         
         _logger.LogInformation("✅ Transaction setup complete");
         _logger.LogInformation("   Program ID: {ProgramId}", _config.ProgramId);

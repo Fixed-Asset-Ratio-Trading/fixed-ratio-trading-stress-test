@@ -26,7 +26,7 @@ public class ContractVersionStartupService : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        _logger.LogInformation("🔍 Starting contract version validation...");
+        _logger.LogInformation("🔍 Starting contract version validation using core wallet...");
 
         try
         {
@@ -76,6 +76,7 @@ public class ContractVersionStartupService : IHostedService
             _logger.LogCritical("  - RPC connection issues");
             _logger.LogCritical("  - GetVersion instruction format issues");
             _logger.LogCritical("  - Program deployment or configuration problems");
+            _logger.LogCritical("  - Core wallet may be empty (insufficient funds for transaction)");
             _logger.LogCritical("🛑 TERMINATING APPLICATION IMMEDIATELY - NO FURTHER EXECUTION ALLOWED");
             
             // Force immediate application termination - do not rely on graceful shutdown

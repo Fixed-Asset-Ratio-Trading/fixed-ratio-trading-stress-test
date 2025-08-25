@@ -64,13 +64,19 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
         //       replaced by engine-native checks.
         _startupServices = new List<IHostedService>
         {
-            // Contract version check (must run first). We provide a shim for lifetime via engine state changes.
+            // Core wallet initialization (must run first). Loads/creates core wallet and handles localnet airdrops.
+            new CoreWalletStartupService(
+                solanaClient: _solanaClientService,
+                configuration: _configuration,
+                logger: new Microsoft.Extensions.Logging.Abstractions.NullLogger<CoreWalletStartupService>()),
+
+            // Contract version check (runs second, after core wallet is ready). We provide a shim for lifetime via engine state changes.
             new ContractVersionStartupService(
                 versionService: _contractVersionService,
                 appLifetime: new NoopHostApplicationLifetime(),
                 logger: new Microsoft.Extensions.Logging.Abstractions.NullLogger<ContractVersionStartupService>()),
 
-            // Pool management second; depends on successful version validation.
+            // Pool management third; depends on successful version validation.
             new PoolManagementStartupService(
                 solanaClient: _solanaClientService,
                 logger: new Microsoft.Extensions.Logging.Abstractions.NullLogger<PoolManagementStartupService>())
