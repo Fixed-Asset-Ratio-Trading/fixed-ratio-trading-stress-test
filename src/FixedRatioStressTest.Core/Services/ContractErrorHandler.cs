@@ -93,13 +93,11 @@ namespace FixedRatioStressTest.Core.Services
             
             try
             {
-                // Check SOL balance
+                // Check SOL balance - core wallet will handle funding if needed
                 var solBalance = await _solanaClient.GetSolBalanceAsync(context.WalletAddress);
                 if (solBalance < SolanaConfiguration.MIN_SOL_BALANCE)
                 {
-                    _logger.LogInformation("Requesting SOL airdrop for {ThreadId}", context.ThreadId);
-                    await _solanaClient.RequestAirdropAsync(context.WalletAddress, SolanaConfiguration.SOL_AIRDROP_AMOUNT);
-                    await Task.Delay(2000); // Wait for airdrop confirmation
+                    _logger.LogInformation("Thread {ThreadId} has insufficient SOL balance - core wallet will fund during operations", context.ThreadId);
                 }
                 
                 // For deposit threads, check token balance and request minting if needed

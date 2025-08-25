@@ -109,17 +109,6 @@ public class ThreadManager : IThreadManager
             
             var solBalance = await _solanaClient.GetSolBalanceAsync(config.PublicKey);
             
-            // Phase 3: Request airdrop if balance is low (devnet/localnet only)
-            if (solBalance < 100000000) // Less than 0.1 SOL
-            {
-                var airdropSignature = await _solanaClient.RequestAirdropAsync(config.PublicKey, 1000000000); // 1 SOL
-                var airdropSuccess = !string.IsNullOrEmpty(airdropSignature);
-                if (airdropSuccess)
-                {
-                    _logger.LogDebug("Requested SOL airdrop for thread {ThreadId}", threadId);
-                }
-            }
-            
             _logger.LogDebug("Restored wallet for thread {ThreadId}: {PublicKey}, SOL balance: {Balance} lamports", 
                 threadId, config.PublicKey, solBalance);
                 
@@ -928,6 +917,11 @@ public class ThreadManager : IThreadManager
             
             _logger.LogInformation("Successfully transferred {Amount} SOL to thread wallet {Recipient}", 
                 transferAmount / 1_000_000_000.0, recipientAddress);
+            
+            // Add 15-second delay after SOL transfer to ensure balance is reflected on localnet
+            _logger.LogDebug("Waiting 15 seconds for SOL transfer to be reflected on localnet...");
+            await Task.Delay(15000);
+            _logger.LogDebug("SOL transfer wait period completed");
             
             return true;
         }
