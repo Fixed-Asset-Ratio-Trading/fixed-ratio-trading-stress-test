@@ -72,6 +72,52 @@ public class ThreadManager : IThreadManager
         _logger.LogDebug("Generated wallet for thread {ThreadId}: {PublicKey} for pool {PoolId}", 
             config.ThreadId, config.PublicKey, config.PoolId);
 
+        // Phase 3: Pre-create ATAs for the thread wallet using core wallet as fee payer
+        try
+        {
+            var poolState = await _solanaClient.GetPoolStateAsync(config.PoolId);
+            
+            // Pre-create ATAs for all relevant token mints based on thread type
+            if (config.ThreadType == ThreadType.Deposit)
+            {
+                var tokenMint = config.TokenType == TokenType.A ? poolState.TokenAMint : poolState.TokenBMint;
+                var lpMint = config.TokenType == TokenType.A ? poolState.LpMintA : poolState.LpMintB;
+                
+                _logger.LogDebug("Pre-creating ATAs for deposit thread {ThreadId}: token mint {TokenMint}, LP mint {LpMint}", 
+                    config.ThreadId, tokenMint, lpMint);
+                
+                await _solanaClient.EnsureAtaExistsAsync(wallet, tokenMint);
+                await _solanaClient.EnsureAtaExistsAsync(wallet, lpMint);
+            }
+            else if (config.ThreadType == ThreadType.Withdrawal)
+            {
+                var tokenMint = config.TokenType == TokenType.A ? poolState.TokenAMint : poolState.TokenBMint;
+                var lpMint = config.TokenType == TokenType.A ? poolState.LpMintA : poolState.LpMintB;
+                
+                _logger.LogDebug("Pre-creating ATAs for withdrawal thread {ThreadId}: token mint {TokenMint}, LP mint {LpMint}", 
+                    config.ThreadId, tokenMint, lpMint);
+                
+                await _solanaClient.EnsureAtaExistsAsync(wallet, tokenMint);
+                await _solanaClient.EnsureAtaExistsAsync(wallet, lpMint);
+            }
+            else if (config.ThreadType == ThreadType.Swap)
+            {
+                // For swap threads, pre-create ATAs for both token mints
+                _logger.LogDebug("Pre-creating ATAs for swap thread {ThreadId}: token A mint {TokenAMint}, token B mint {TokenBMint}", 
+                    config.ThreadId, poolState.TokenAMint, poolState.TokenBMint);
+                
+                await _solanaClient.EnsureAtaExistsAsync(wallet, poolState.TokenAMint);
+                await _solanaClient.EnsureAtaExistsAsync(wallet, poolState.TokenBMint);
+            }
+            
+            _logger.LogDebug("Successfully pre-created ATAs for thread {ThreadId}", config.ThreadId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to pre-create ATAs for thread {ThreadId}, will create on-demand during operations", config.ThreadId);
+            // Don't fail thread creation if ATA pre-creation fails - they can be created later
+        }
+
         await _storageService.SaveThreadConfigAsync(config.ThreadId, config);
 
         var statistics = new ThreadStatistics();
@@ -100,7 +146,7 @@ public class ThreadManager : IThreadManager
             }
         }
 
-        // Phase 2: Restore wallet and check initial balance
+        // Phase 2: Restore wallet and ensure proper funding order
         // Phase 3: Cache wallet for operations
         if (config.PrivateKey != null && config.PublicKey != null)
         {
@@ -111,8 +157,68 @@ public class ThreadManager : IThreadManager
             
             _logger.LogDebug("Restored wallet for thread {ThreadId}: {PublicKey}, SOL balance: {Balance} lamports", 
                 threadId, config.PublicKey, solBalance);
+
+            // Phase 3.5: Ensure SOL funding BEFORE any token operations or ATA work
+            if (solBalance < 100_000_000) // Less than 0.1 SOL for fees
+            {
+                _logger.LogDebug("Thread wallet has insufficient SOL balance, funding from core wallet before operations");
+                var transferred = await TransferSolFromCoreWallet(config.PublicKey);
+                if (transferred)
+                {
+                    // Wait for SOL transfer to be confirmed with stronger commitment
+                    await WaitForSolTransferConfirmation(config.PublicKey, solBalance);
+                }
+                else
+                {
+                    _logger.LogWarning("Failed to transfer SOL to thread {ThreadId}, operations may fail", threadId);
+                }
+            }
                 
-            // Phase 4: Initial token funding for deposit threads
+            // Phase 3.7: Ensure ATAs exist for thread operations (fallback for threads created before fixes)
+            try
+            {
+                var poolState = await _solanaClient.GetPoolStateAsync(config.PoolId);
+                
+                if (config.ThreadType == ThreadType.Deposit)
+                {
+                    var tokenMint = config.TokenType == TokenType.A ? poolState.TokenAMint : poolState.TokenBMint;
+                    var lpMint = config.TokenType == TokenType.A ? poolState.LpMintA : poolState.LpMintB;
+                    
+                    _logger.LogDebug("Ensuring ATAs exist for deposit thread {ThreadId}: token mint {TokenMint}, LP mint {LpMint}", 
+                        config.ThreadId, tokenMint, lpMint);
+                    
+                    await _solanaClient.EnsureAtaExistsAsync(wallet, tokenMint);
+                    await _solanaClient.EnsureAtaExistsAsync(wallet, lpMint);
+                }
+                else if (config.ThreadType == ThreadType.Withdrawal)
+                {
+                    var tokenMint = config.TokenType == TokenType.A ? poolState.TokenAMint : poolState.TokenBMint;
+                    var lpMint = config.TokenType == TokenType.A ? poolState.LpMintA : poolState.LpMintB;
+                    
+                    _logger.LogDebug("Ensuring ATAs exist for withdrawal thread {ThreadId}: token mint {TokenMint}, LP mint {LpMint}", 
+                        config.ThreadId, tokenMint, lpMint);
+                    
+                    await _solanaClient.EnsureAtaExistsAsync(wallet, tokenMint);
+                    await _solanaClient.EnsureAtaExistsAsync(wallet, lpMint);
+                }
+                else if (config.ThreadType == ThreadType.Swap)
+                {
+                    _logger.LogDebug("Ensuring ATAs exist for swap thread {ThreadId}: token A mint {TokenAMint}, token B mint {TokenBMint}", 
+                        config.ThreadId, poolState.TokenAMint, poolState.TokenBMint);
+                    
+                    await _solanaClient.EnsureAtaExistsAsync(wallet, poolState.TokenAMint);
+                    await _solanaClient.EnsureAtaExistsAsync(wallet, poolState.TokenBMint);
+                }
+                
+                _logger.LogDebug("Successfully ensured ATAs exist for thread {ThreadId}", config.ThreadId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to ensure ATAs exist for thread {ThreadId}, will create on-demand during operations", config.ThreadId);
+                // Don't fail thread start if ATA creation fails - they can be created later
+            }
+
+            // Phase 4: Initial token funding for deposit threads (after SOL funding is confirmed)
             if (config.ThreadType == ThreadType.Deposit && config.InitialAmount > 0)
             {
                 await FundDepositThreadInitially(config, wallet);
@@ -918,17 +1024,46 @@ public class ThreadManager : IThreadManager
             _logger.LogInformation("Successfully transferred {Amount} SOL to thread wallet {Recipient}", 
                 transferAmount / 1_000_000_000.0, recipientAddress);
             
-            // Add 15-second delay after SOL transfer to ensure balance is reflected on localnet
-            _logger.LogDebug("Waiting 15 seconds for SOL transfer to be reflected on localnet...");
-            await Task.Delay(15000);
-            _logger.LogDebug("SOL transfer wait period completed");
-            
             return true;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to transfer SOL from core wallet to {Recipient}", recipientAddress);
             return false;
+        }
+    }
+
+    private async Task WaitForSolTransferConfirmation(string recipientAddress, ulong previousBalance)
+    {
+        try
+        {
+            _logger.LogDebug("Waiting for SOL transfer confirmation for {Recipient}", recipientAddress);
+            
+            // Wait for the balance to increase with retry logic and stronger commitment
+            var maxAttempts = 10;
+            var delayMs = 2000; // 2 seconds between checks
+            
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                await Task.Delay(delayMs);
+                
+                var currentBalance = await _solanaClient.GetSolBalanceAsync(recipientAddress);
+                if (currentBalance > previousBalance)
+                {
+                    _logger.LogDebug("SOL transfer confirmed for {Recipient}: balance increased from {Previous} to {Current} lamports (attempt {Attempt})", 
+                        recipientAddress, previousBalance, currentBalance, attempt);
+                    return;
+                }
+                
+                _logger.LogDebug("SOL transfer not yet reflected for {Recipient}: balance still {Balance} lamports (attempt {Attempt}/{MaxAttempts})", 
+                    recipientAddress, currentBalance, attempt, maxAttempts);
+            }
+            
+            _logger.LogWarning("SOL transfer confirmation timeout for {Recipient} after {MaxAttempts} attempts", recipientAddress, maxAttempts);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to wait for SOL transfer confirmation for {Recipient}", recipientAddress);
         }
     }
 

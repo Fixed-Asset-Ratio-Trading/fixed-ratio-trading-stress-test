@@ -1739,58 +1739,94 @@ public async Task CleanupInvalidPoolsAsync()
             var info = await _rpcClient.GetAccountInfoAsync(ata);
             if (info.Result?.Value != null) return;
 
-            // Ensure fee payer has funds before attempting ATA creation
+            // Use core wallet as fee payer to avoid funding issues with thread wallets
+            var coreWallet = await GetOrCreateCoreWalletAsync();
+            var coreWalletPrivateKey = Convert.FromBase64String(coreWallet.PrivateKey);
+            var coreWalletInstance = RestoreWallet(coreWalletPrivateKey);
+
+            // Verify program IDs match the mint type (Token vs Token-2022)
+            var (tokenProgramId, associatedTokenProgramId) = await GetTokenProgramIds(mintAddress);
+
+            _logger.LogDebug("Creating ATA {ATA} for wallet {Owner} and mint {Mint} using core wallet {CoreWallet} as fee payer (TokenProgram: {TokenProgram}, ATAProgram: {ATAProgram})",
+                ata, wallet.Account.PublicKey, mintAddress, coreWalletInstance.Account.PublicKey, tokenProgramId, associatedTokenProgramId);
+
+            // Verify core wallet has sufficient balance
             try
             {
-                var balance = await _rpcClient.GetBalanceAsync(wallet.Account.PublicKey);
-                var lamports = balance.Result?.Value ?? 0UL;
-                if (lamports < 200_000UL)
+                var coreBalance = await _rpcClient.GetBalanceAsync(coreWalletInstance.Account.PublicKey);
+                var lamports = coreBalance.Result?.Value ?? 0UL;
+                if (lamports < 5_000_000UL) // 0.005 SOL minimum for ATA creation
                 {
-                    _logger.LogWarning("Fee payer {Payer} has low balance ({Lamports} lamports) before ATA creation for mint {Mint}",
-                        wallet.Account.PublicKey, lamports, mintAddress);
+                    _logger.LogWarning("Core wallet {CoreWallet} has low balance ({Lamports} lamports) for ATA creation",
+                        coreWalletInstance.Account.PublicKey, lamports);
                 }
             }
             catch { /* best-effort balance check */ }
 
-            // Retry ATA creation to avoid race conditions after recent funding
+            // Retry ATA creation to avoid race conditions
             for (int attempt = 1; attempt <= 3; attempt++)
             {
                 try
                 {
+                    _logger.LogDebug("ATA creation attempt {Attempt}/3 for {ATA} (mint: {Mint}, owner: {Owner})", 
+                        attempt, ata, mintAddress, wallet.Account.PublicKey);
+
                     var blockHash = await _rpcClient.GetLatestBlockHashAsync();
                     var tx = new TransactionBuilder()
-                        .SetFeePayer(wallet.Account.PublicKey)
+                        .SetFeePayer(coreWalletInstance.Account.PublicKey) // Core wallet pays fees
                         .SetRecentBlockHash(blockHash.Result.Value.Blockhash)
                         .AddInstruction(AssociatedTokenAccountProgram.CreateAssociatedTokenAccount(
-                            wallet.Account.PublicKey,
-                            wallet.Account.PublicKey,
-                            new PublicKey(mintAddress)))
-                        .Build(wallet.Account);
+                            coreWalletInstance.Account.PublicKey, // Fee payer (core wallet)
+                            wallet.Account.PublicKey,             // ATA owner (thread wallet)
+                            new PublicKey(mintAddress)))          // Mint
+                        .Build(coreWalletInstance.Account); // Sign with core wallet
+
+                    _logger.LogDebug("Sending ATA creation transaction (attempt {Attempt}) with core wallet {CoreWallet} as fee payer", 
+                        attempt, coreWalletInstance.Account.PublicKey);
 
                     var sig = await SendTransactionAsync(tx);
+                    _logger.LogDebug("ATA creation transaction sent with signature {Signature} (attempt {Attempt})", sig, attempt);
+
                     var confirmed = await ConfirmTransactionAsync(sig);
                     if (!confirmed)
                     {
-                        _logger.LogWarning("ATA creation tx not confirmed (attempt {Attempt}) for {ATA}", attempt, ata);
+                        _logger.LogWarning("ATA creation tx not confirmed (attempt {Attempt}) for {ATA}, signature: {Signature}", attempt, ata, sig);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("ATA creation transaction confirmed (attempt {Attempt}), signature: {Signature}", attempt, sig);
                     }
 
                     // Verify ATA now exists
                     var post = await _rpcClient.GetAccountInfoAsync(ata);
                     if (post.Result?.Value != null)
                     {
+                        _logger.LogDebug("Successfully created ATA {ATA} for wallet {Owner} using core wallet as fee payer (attempt {Attempt})", 
+                            ata, wallet.Account.PublicKey, attempt);
                         return;
+                    }
+                    else
+                    {
+                        _logger.LogWarning("ATA {ATA} still does not exist after transaction confirmation (attempt {Attempt})", ata, attempt);
                     }
                 }
                 catch (Exception ex)
                 {
                     var msg = ex.Message ?? string.Empty;
+                    _logger.LogError(ex, "ATA creation attempt {Attempt} failed for {ATA} (mint: {Mint}, owner: {Owner}): {Message}", 
+                        attempt, ata, mintAddress, wallet.Account.PublicKey, msg);
+
                     if (msg.Contains("Attempt to debit an account but found no record of a prior credit", StringComparison.OrdinalIgnoreCase))
                     {
                         _logger.LogWarning("ATA creation attempt {Attempt} hit debit error; retrying after short delay", attempt);
                         await Task.Delay(1000);
                         continue;
                     }
-                    throw;
+                    
+                    if (attempt == 3) // Last attempt, throw the error
+                    {
+                        throw;
+                    }
                 }
 
                 await Task.Delay(500);
@@ -1799,7 +1835,92 @@ public async Task CleanupInvalidPoolsAsync()
             var finalInfo = await _rpcClient.GetAccountInfoAsync(ata);
             if (finalInfo.Result?.Value == null)
             {
-                throw new InvalidOperationException($"Failed to create ATA {ata} for mint {mintAddress} after retries");
+                throw new InvalidOperationException($"Failed to create ATA {ata} for mint {mintAddress} after retries using core wallet as fee payer");
+            }
+        }
+
+        private async Task<(PublicKey tokenProgramId, PublicKey associatedTokenProgramId)> GetTokenProgramIds(string mintAddress)
+        {
+            try
+            {
+                // Get mint account info to determine if it's Token or Token-2022
+                var mintInfo = await _rpcClient.GetAccountInfoAsync(mintAddress);
+                if (mintInfo.Result?.Value?.Owner != null)
+                {
+                    var ownerProgramId = mintInfo.Result.Value.Owner;
+                    
+                    // Token-2022 Program ID: TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb
+                    if (ownerProgramId == "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+                    {
+                        _logger.LogDebug("Mint {Mint} is Token-2022, using Token-2022 program IDs", mintAddress);
+                        return (
+                            new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"), // Token-2022 Program
+                            new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")  // Associated Token Program (same for both)
+                        );
+                    }
+                    else if (ownerProgramId == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+                    {
+                        _logger.LogDebug("Mint {Mint} is legacy Token, using legacy Token program IDs", mintAddress);
+                        return (
+                            new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"), // Legacy Token Program
+                            new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")  // Associated Token Program (same for both)
+                        );
+                    }
+                    
+                    _logger.LogWarning("Unknown token program owner {Owner} for mint {Mint}, defaulting to legacy Token", ownerProgramId, mintAddress);
+                }
+                else
+                {
+                    _logger.LogWarning("Could not determine mint owner for {Mint}, defaulting to legacy Token", mintAddress);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to determine token program for mint {Mint}, defaulting to legacy Token", mintAddress);
+            }
+            
+            // Default to legacy Token program
+            return (
+                new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"), // Legacy Token Program
+                new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")  // Associated Token Program
+            );
+        }
+
+        private TransactionInstruction CreateAssociatedTokenAccountInstruction(
+            PublicKey feePayer,
+            PublicKey owner,
+            PublicKey mint,
+            PublicKey tokenProgramId,
+            PublicKey associatedTokenProgramId)
+        {
+            // Derive the ATA address using the correct token program
+            var seeds = new List<byte[]>
+            {
+                owner.KeyBytes,
+                tokenProgramId.KeyBytes,
+                mint.KeyBytes
+            };
+
+            if (PublicKey.TryFindProgramAddress(seeds, associatedTokenProgramId, out var associatedTokenAccount, out _))
+            {
+                return new TransactionInstruction
+                {
+                    ProgramId = associatedTokenProgramId,
+                    Keys = new List<AccountMeta>
+                    {
+                        AccountMeta.Writable(feePayer, true),              // Fee payer (signer)
+                        AccountMeta.Writable(associatedTokenAccount, false), // ATA to create
+                        AccountMeta.ReadOnly(owner, false),                // ATA owner
+                        AccountMeta.ReadOnly(mint, false),                 // Mint
+                        AccountMeta.ReadOnly(SystemProgram.ProgramIdKey, false), // System program
+                        AccountMeta.ReadOnly(tokenProgramId, false),       // Token program
+                    },
+                    Data = Array.Empty<byte>() // No instruction data needed for ATA creation
+                };
+            }
+            else
+            {
+                throw new InvalidOperationException($"Failed to derive ATA address for owner {owner} and mint {mint}");
             }
         }
 
