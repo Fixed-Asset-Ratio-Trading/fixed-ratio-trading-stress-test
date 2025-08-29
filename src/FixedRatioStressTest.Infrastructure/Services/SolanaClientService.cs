@@ -1735,17 +1735,21 @@ public async Task CleanupInvalidPoolsAsync()
 
         public async Task EnsureAtaExistsAsync(Wallet wallet, string mintAddress)
         {
-            var ata = await _transactionBuilder.GetOrCreateAssociatedTokenAccountAsync(wallet, mintAddress);
+            // CRITICAL FIX: Derive ATA using correct token program ID
+            var (tokenProgramId, associatedTokenProgramId) = await GetTokenProgramIds(mintAddress);
+            var ata = DeriveAssociatedTokenAccountAddress(wallet.Account.PublicKey, new PublicKey(mintAddress), tokenProgramId);
+            
             var info = await _rpcClient.GetAccountInfoAsync(ata);
-            if (info.Result?.Value != null) return;
+            if (info.Result?.Value != null) 
+            {
+                _logger.LogDebug("ATA {ATA} already exists for wallet {Owner} and mint {Mint}", ata, wallet.Account.PublicKey, mintAddress);
+                return;
+            }
 
             // Use core wallet as fee payer to avoid funding issues with thread wallets
             var coreWallet = await GetOrCreateCoreWalletAsync();
             var coreWalletPrivateKey = Convert.FromBase64String(coreWallet.PrivateKey);
             var coreWalletInstance = RestoreWallet(coreWalletPrivateKey);
-
-            // Verify program IDs match the mint type (Token vs Token-2022)
-            var (tokenProgramId, associatedTokenProgramId) = await GetTokenProgramIds(mintAddress);
 
             _logger.LogDebug("Creating ATA {ATA} for wallet {Owner} and mint {Mint} using core wallet {CoreWallet} as fee payer (TokenProgram: {TokenProgram}, ATAProgram: {ATAProgram})",
                 ata, wallet.Account.PublicKey, mintAddress, coreWalletInstance.Account.PublicKey, tokenProgramId, associatedTokenProgramId);
@@ -1763,23 +1767,29 @@ public async Task CleanupInvalidPoolsAsync()
             }
             catch { /* best-effort balance check */ }
 
-            // Retry ATA creation to avoid race conditions
-            for (int attempt = 1; attempt <= 3; attempt++)
+            // Retry ATA creation with improved error handling and delays
+            for (int attempt = 1; attempt <= 5; attempt++) // Increased to 5 attempts
             {
                 try
                 {
-                    _logger.LogDebug("ATA creation attempt {Attempt}/3 for {ATA} (mint: {Mint}, owner: {Owner})", 
+                    _logger.LogDebug("ATA creation attempt {Attempt}/5 for {ATA} (mint: {Mint}, owner: {Owner})", 
                         attempt, ata, mintAddress, wallet.Account.PublicKey);
 
                     var blockHash = await _rpcClient.GetLatestBlockHashAsync();
+                    
+                    // CRITICAL FIX: Use custom ATA creation instruction with correct token program IDs
+                    var instruction = CreateAssociatedTokenAccountInstruction(
+                        coreWalletInstance.Account.PublicKey, // Fee payer (core wallet)
+                        wallet.Account.PublicKey,             // ATA owner (thread wallet)
+                        new PublicKey(mintAddress),           // Mint
+                        tokenProgramId,                       // Correct token program
+                        associatedTokenProgramId);            // ATA program
+                    
                     var tx = new TransactionBuilder()
-                        .SetFeePayer(coreWalletInstance.Account.PublicKey) // Core wallet pays fees
+                        .SetFeePayer(coreWalletInstance.Account.PublicKey)
                         .SetRecentBlockHash(blockHash.Result.Value.Blockhash)
-                        .AddInstruction(AssociatedTokenAccountProgram.CreateAssociatedTokenAccount(
-                            coreWalletInstance.Account.PublicKey, // Fee payer (core wallet)
-                            wallet.Account.PublicKey,             // ATA owner (thread wallet)
-                            new PublicKey(mintAddress)))          // Mint
-                        .Build(coreWalletInstance.Account); // Sign with core wallet
+                        .AddInstruction(instruction)
+                        .Build(coreWalletInstance.Account);
 
                     _logger.LogDebug("Sending ATA creation transaction (attempt {Attempt}) with core wallet {CoreWallet} as fee payer", 
                         attempt, coreWalletInstance.Account.PublicKey);
@@ -1790,16 +1800,19 @@ public async Task CleanupInvalidPoolsAsync()
                     var confirmed = await ConfirmTransactionAsync(sig);
                     if (!confirmed)
                     {
-                        _logger.LogWarning("ATA creation tx not confirmed (attempt {Attempt}) for {ATA}, signature: {Signature}", attempt, ata, sig);
+                        _logger.LogWarning("ATA creation tx not confirmed or failed (attempt {Attempt}) for {ATA}, signature: {Signature}", attempt, ata, sig);
+                        
+                        // Wait longer before retry on confirmation failure
+                        var delay = attempt < 5 ? 2000 * attempt : 10000; // 2s, 4s, 6s, 8s, 10s
+                        await Task.Delay(delay);
+                        continue;
                     }
-                    else
-                    {
-                        _logger.LogDebug("ATA creation transaction confirmed (attempt {Attempt}), signature: {Signature}", attempt, sig);
-                    }
+                    
+                    _logger.LogDebug("ATA creation transaction confirmed (attempt {Attempt}), signature: {Signature}", attempt, sig);
 
-                    // Verify ATA now exists
-                    var post = await _rpcClient.GetAccountInfoAsync(ata);
-                    if (post.Result?.Value != null)
+                    // CRITICAL FIX: Wait for account to actually exist with proper polling
+                    var accountExists = await WaitForAccountExistence(ata, maxWaitAttempts: 10, delayMs: 1500);
+                    if (accountExists)
                     {
                         _logger.LogDebug("Successfully created ATA {ATA} for wallet {Owner} using core wallet as fee payer (attempt {Attempt})", 
                             ata, wallet.Account.PublicKey, attempt);
@@ -1807,7 +1820,7 @@ public async Task CleanupInvalidPoolsAsync()
                     }
                     else
                     {
-                        _logger.LogWarning("ATA {ATA} still does not exist after transaction confirmation (attempt {Attempt})", ata, attempt);
+                        _logger.LogWarning("ATA {ATA} still does not exist after transaction confirmation and polling (attempt {Attempt})", ata, attempt);
                     }
                 }
                 catch (Exception ex)
@@ -1818,18 +1831,20 @@ public async Task CleanupInvalidPoolsAsync()
 
                     if (msg.Contains("Attempt to debit an account but found no record of a prior credit", StringComparison.OrdinalIgnoreCase))
                     {
-                        _logger.LogWarning("ATA creation attempt {Attempt} hit debit error; retrying after short delay", attempt);
-                        await Task.Delay(1000);
+                        _logger.LogWarning("ATA creation attempt {Attempt} hit debit error; retrying after delay", attempt);
+                        await Task.Delay(3000); // Longer delay for debit errors
                         continue;
                     }
                     
-                    if (attempt == 3) // Last attempt, throw the error
+                    if (attempt == 5) // Last attempt, throw the error
                     {
                         throw;
                     }
                 }
 
-                await Task.Delay(500);
+                // Progressive delay between attempts: 1s, 2s, 3s, 4s
+                var retryDelay = 1000 * attempt;
+                await Task.Delay(retryDelay);
             }
             // Final check; if still missing, throw
             var finalInfo = await _rpcClient.GetAccountInfoAsync(ata);
@@ -1837,6 +1852,68 @@ public async Task CleanupInvalidPoolsAsync()
             {
                 throw new InvalidOperationException($"Failed to create ATA {ata} for mint {mintAddress} after retries using core wallet as fee payer");
             }
+        }
+
+        /// <summary>
+        /// Derives ATA address using the correct token program ID (supports both Token and Token-2022)
+        /// </summary>
+        private PublicKey DeriveAssociatedTokenAccountAddress(PublicKey owner, PublicKey mint, PublicKey tokenProgramId)
+        {
+            var seeds = new List<byte[]>
+            {
+                owner.KeyBytes,
+                tokenProgramId.KeyBytes,
+                mint.KeyBytes
+            };
+
+            var associatedTokenProgramId = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+            if (PublicKey.TryFindProgramAddress(seeds, associatedTokenProgramId, out var ata, out _))
+            {
+                return ata;
+            }
+            
+            throw new InvalidOperationException($"Failed to derive ATA address for owner {owner} and mint {mint}");
+        }
+
+        /// <summary>
+        /// Waits for an account to exist on the blockchain with proper polling and retries
+        /// </summary>
+        private async Task<bool> WaitForAccountExistence(PublicKey accountAddress, int maxWaitAttempts = 10, int delayMs = 1500)
+        {
+            for (int i = 0; i < maxWaitAttempts; i++)
+            {
+                try
+                {
+                    var accountInfo = await _rpcClient.GetAccountInfoAsync(accountAddress);
+                    if (accountInfo.Result?.Value != null)
+                    {
+                        _logger.LogDebug("Account {Account} exists after {Attempts} polling attempts", accountAddress, i + 1);
+                        return true;
+                    }
+                    
+                    _logger.LogDebug("Account {Account} does not exist yet, polling attempt {Attempt}/{MaxAttempts}", 
+                        accountAddress, i + 1, maxWaitAttempts);
+                    
+                    if (i < maxWaitAttempts - 1) // Don't delay after the last attempt
+                    {
+                        await Task.Delay(delayMs);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error polling for account existence {Account}, attempt {Attempt}/{MaxAttempts}", 
+                        accountAddress, i + 1, maxWaitAttempts);
+                    
+                    if (i < maxWaitAttempts - 1)
+                    {
+                        await Task.Delay(delayMs);
+                    }
+                }
+            }
+            
+            _logger.LogWarning("Account {Account} still does not exist after {MaxAttempts} polling attempts", 
+                accountAddress, maxWaitAttempts);
+            return false;
         }
 
         private async Task<(PublicKey tokenProgramId, PublicKey associatedTokenProgramId)> GetTokenProgramIds(string mintAddress)
@@ -2447,11 +2524,37 @@ public async Task CleanupInvalidPoolsAsync()
                         var status = result.Result.Value[0];
                         if (status?.ConfirmationStatus == "confirmed" || status?.ConfirmationStatus == "finalized")
                         {
-                            return true;
+                            // CRITICAL FIX: Check if transaction actually succeeded
+                            if (status.Error != null)
+                            {
+                                _logger.LogError("Transaction {Signature} confirmed but failed with error: {Error}", signature, status.Error);
+                                
+                                // Try to get detailed transaction logs for debugging
+                                try
+                                {
+                                    var txResult = await _rpcClient.GetTransactionAsync(signature, Commitment.Confirmed);
+                                    if (txResult.Result?.Meta?.LogMessages != null)
+                                    {
+                                        _logger.LogError("Transaction logs for {Signature}:", signature);
+                                        foreach (var log in txResult.Result.Meta.LogMessages)
+                                        {
+                                            _logger.LogError("  {Log}", log);
+                                        }
+                                    }
+                                }
+                                catch (Exception logEx)
+                                {
+                                    _logger.LogWarning(logEx, "Failed to fetch transaction logs for {Signature}", signature);
+                                }
+                                
+                                return false; // Transaction failed
+                            }
+                            
+                            return true; // Transaction succeeded
                         }
                     }
                     
-                    await Task.Delay(1000); // Wait 1 second before retry
+                    await Task.Delay(2000); // Increased delay to 2 seconds
                 }
                 catch (Exception ex)
                 {
