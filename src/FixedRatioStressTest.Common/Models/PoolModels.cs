@@ -92,14 +92,14 @@ namespace FixedRatioStressTest.Common.Models
         
         public static SwapCalculation Calculate(PoolState pool, Common.Models.SwapDirection direction, ulong inputAmount, double slippageTolerance = 0.01)
         {
-            // CRITICAL: The Fixed Ratio Trading contract uses OPPOSITE formulas from what you'd expect!
-            // This has been verified by analyzing contract error logs
+            // FIXED: Use the correct Fixed Ratio Trading formulas
+            // The contract calculates output based on the ratio between tokens
             ulong outputAmount = direction switch
             {
-                // For A→B swaps, contract uses the B→A formula
-                Common.Models.SwapDirection.AToB => (inputAmount * pool.RatioANumerator) / pool.RatioBDenominator,
-                // For B→A swaps, contract uses the A→B formula  
-                Common.Models.SwapDirection.BToA => (inputAmount * pool.RatioBDenominator) / pool.RatioANumerator,
+                // For A→B swaps: output = (input × ratioB) ÷ ratioA
+                Common.Models.SwapDirection.AToB => (inputAmount * pool.RatioBDenominator) / pool.RatioANumerator,
+                // For B→A swaps: output = (input × ratioA) ÷ ratioB
+                Common.Models.SwapDirection.BToA => (inputAmount * pool.RatioANumerator) / pool.RatioBDenominator,
                 _ => throw new ArgumentException("Invalid swap direction")
             };
             

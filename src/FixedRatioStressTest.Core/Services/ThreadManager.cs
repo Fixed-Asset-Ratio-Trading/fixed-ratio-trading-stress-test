@@ -560,6 +560,40 @@ public class ThreadManager : IThreadManager
             // Use the fee-aware swap calculation
             var swapCalc = SwapCalculation.Calculate(pool, swapDirection, swapAmount);
             
+            // ENHANCED DEBUGGING: Use FRTExpectedTokens for validation and logging
+            var expectedOutputDebug = FixedRatioStressTest.Common.Utils.FRTExpectedTokens.Calculate(
+                swapAmount,
+                pool.TokenADecimals,
+                pool.TokenBDecimals,
+                pool.RatioANumerator,
+                pool.RatioBDenominator,
+                swapDirection == SwapDirection.AToB
+            );
+            
+            // Log detailed calculation explanation
+            var calculationExplanation = FixedRatioStressTest.Common.Utils.FRTExpectedTokens.ExplainCalculation(
+                swapAmount,
+                pool.TokenADecimals,
+                pool.TokenBDecimals,
+                pool.RatioANumerator,
+                pool.RatioBDenominator,
+                swapDirection == SwapDirection.AToB
+            );
+            
+            _logger.LogDebug("🧮 SWAP CALCULATION DEBUG - Thread {ThreadId}", config.ThreadId);
+            _logger.LogDebug("  Pool: ratioA={RatioA}, ratioB={RatioB}, decimalsA={DecA}, decimalsB={DecB}",
+                pool.RatioANumerator, pool.RatioBDenominator, pool.TokenADecimals, pool.TokenBDecimals);
+            _logger.LogDebug("  Calculation: {Explanation}", calculationExplanation);
+            _logger.LogDebug("  SwapCalc Output: {SwapCalcOutput}, FRTExpected Output: {FRTOutput}",
+                swapCalc.OutputAmount, expectedOutputDebug);
+            
+            // Validate outputs match
+            if (swapCalc.OutputAmount != expectedOutputDebug)
+            {
+                _logger.LogError("⚠️ OUTPUT MISMATCH - SwapCalc: {SwapCalc} vs FRTExpected: {Expected}",
+                    swapCalc.OutputAmount, expectedOutputDebug);
+            }
+            
             _logger.LogDebug("🧮 OUTPUT VALIDATION - Thread {ThreadId}: expectedOutput={Output}", 
                 config.ThreadId, swapCalc.OutputAmount);
             
@@ -570,14 +604,6 @@ public class ThreadManager : IThreadManager
                     config.ThreadId, swapAmount);
                 return ("swap_waiting", true, 0);
             }
-            
-            // Log the calculation for debugging
-            _logger.LogDebug("Pool decimals - TokenA: {TokenADecimals}, TokenB: {TokenBDecimals}", 
-                pool.TokenADecimals, pool.TokenBDecimals);
-            
-            _logger.LogDebug("Swap calculation for {Direction}: input={Input} basis points, ratioA={RatioA}, ratioB={RatioB}, netOutput={NetOutput} basis points",
-                swapDirection, swapAmount, pool.RatioANumerator, pool.RatioBDenominator, 
-                swapCalc.OutputAmount);
             
             // Fixed Ratio Trading requires EXACT expected output (no slippage)
             var expectedOutput = swapCalc.OutputAmount;
