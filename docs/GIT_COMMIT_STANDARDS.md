@@ -232,6 +232,38 @@ build: Update Solana dependencies to v1.18.0
 - [ ] No spelling/grammar errors
 - [ ] References to issues/PRs when relevant
 
+## 🚀 Smooth Commit Process
+
+For a streamlined commit workflow, follow the step-by-step process documented in [GIT_COMMIT_COMMANDS.md](./GIT_COMMIT_COMMANDS.md):
+
+### Quick Reference Commands
+```bash
+# 1. Check current status
+git status
+
+# 2. Stage all changes (or specific files)
+git add .
+
+# 3. Commit with detailed message
+git commit -m "type: descriptive subject line
+
+- 🔧 Fixed: specific issue description
+- ✅ Added: new functionality
+- 📊 Enhanced: improvements made"
+
+# 4. Verify commit was created
+git log --oneline -1
+
+# 5. Show commit statistics (no pager)
+git show --stat | cat
+```
+
+### Key Benefits
+- **No pager hanging:** Use `| cat` to prevent `git show` from requiring 'q' to exit
+- **Consistent workflow:** Standardized process for all commits
+- **Complete verification:** Ensures all changes are properly committed
+- **Detailed documentation:** See [GIT_COMMIT_COMMANDS.md](./GIT_COMMIT_COMMANDS.md) for full explanations
+
 ## 🤝 Collaboration Guidelines
 
 ### For AI Systems
@@ -248,6 +280,7 @@ build: Update Solana dependencies to v1.18.0
 
 ## 📚 References
 
+- [Git Commit Commands Guide](./GIT_COMMIT_COMMANDS.md) - Step-by-step commit process with command explanations
 - [Conventional Commits](https://www.conventionalcommits.org/)
 - [How to Write a Git Commit Message](https://chris.beams.io/posts/git-commit/)
 - [Angular Commit Message Guidelines](https://github.com/angular/angular/blob/main/CONTRIBUTING.md#commit)
