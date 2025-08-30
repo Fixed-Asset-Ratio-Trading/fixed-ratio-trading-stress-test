@@ -12,6 +12,7 @@ public class ThreadManager : IThreadManager
     private readonly ISolanaClientService _solanaClient;
     private readonly ITransactionBuilderService _transactionBuilder;
     private readonly IContractErrorHandler _contractErrorHandler;
+    private readonly ISystemStateService _systemState;
     private readonly ILogger<ThreadManager> _logger;
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _runningThreads;
     private readonly ConcurrentDictionary<string, Wallet> _walletCache;
@@ -22,12 +23,14 @@ public class ThreadManager : IThreadManager
         ISolanaClientService solanaClient,
         ITransactionBuilderService transactionBuilder,
         IContractErrorHandler contractErrorHandler,
+        ISystemStateService systemState,
         ILogger<ThreadManager> logger)
     {
         _storageService = storageService;
         _solanaClient = solanaClient;
         _transactionBuilder = transactionBuilder;
         _contractErrorHandler = contractErrorHandler;
+        _systemState = systemState;
         _logger = logger;
         _runningThreads = new ConcurrentDictionary<string, CancellationTokenSource>();
         _walletCache = new ConcurrentDictionary<string, Wallet>();
@@ -86,6 +89,9 @@ public class ThreadManager : IThreadManager
 
     public async Task StartThreadAsync(string threadId)
     {
+        // Validate system state before starting any thread
+        _systemState.ValidateSystemState();
+        
         var config = await _storageService.LoadThreadConfigAsync(threadId);
 
         // Recover from stale Running status on restart
@@ -180,6 +186,63 @@ public class ThreadManager : IThreadManager
     public Task<ThreadStatistics> GetThreadStatisticsAsync(string threadId)
         => _storageService.LoadThreadStatisticsAsync(threadId);
 
+    /// <inheritdoc />
+    public async Task ForceStopAllThreadsAsync()
+    {
+        _logger.LogWarning("[ThreadManager] FORCE STOPPING ALL THREADS - System shutdown initiated");
+        
+        // Cancel all running threads immediately
+        var runningThreadsCopy = _runningThreads.ToList();
+        _logger.LogInformation("[ThreadManager] Force stopping {Count} active threads", runningThreadsCopy.Count);
+        
+        foreach (var kvp in runningThreadsCopy)
+        {
+            try
+            {
+                _logger.LogDebug("[ThreadManager] Force cancelling thread {ThreadId}", kvp.Key);
+                kvp.Value.Cancel();
+                _runningThreads.TryRemove(kvp.Key, out _);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[ThreadManager] Error force stopping thread {ThreadId}", kvp.Key);
+            }
+        }
+
+        // Give threads a brief moment to respond to cancellation, then continue cleanup
+        if (runningThreadsCopy.Count > 0)
+        {
+            _logger.LogInformation("[ThreadManager] Waiting 2 seconds for threads to respond to cancellation...");
+            await Task.Delay(2000);
+        }
+
+        // Clear wallet cache
+        _walletCache.Clear();
+        _resourceRequestTimes.Clear();
+        
+        // Update all thread statuses to Stopped in storage
+        try
+        {
+            var allThreads = await _storageService.LoadAllThreadsAsync();
+            var runningThreads = allThreads.Where(t => t.Status == ThreadStatus.Running || t.Status == ThreadStatus.Paused).ToList();
+            
+            _logger.LogInformation("[ThreadManager] Updating {Count} thread statuses to Stopped", runningThreads.Count);
+            
+            foreach (var thread in runningThreads)
+            {
+                thread.Status = ThreadStatus.Stopped;
+                await _storageService.SaveThreadConfigAsync(thread.ThreadId, thread);
+                _logger.LogDebug("[ThreadManager] Updated thread {ThreadId} status to Stopped", thread.ThreadId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ThreadManager] Error updating thread statuses during force stop");
+        }
+        
+        _logger.LogWarning("[ThreadManager] FORCE STOP COMPLETE - All threads stopped and cleaned up");
+    }
+
     private async Task RunWorkerThread(ThreadConfig config, CancellationToken cancellationToken)
     {
         var random = new Random();
@@ -202,6 +265,9 @@ public class ThreadManager : IThreadManager
                 var operationSuccess = false;
                 var volumeProcessed = 0ul;
 
+                // Check cancellation before starting any operation
+                cancellationToken.ThrowIfCancellationRequested();
+                
                 // Phase 3: Implement actual blockchain operations based on thread type
                 switch (config.ThreadType)
                 {
@@ -222,6 +288,9 @@ public class ThreadManager : IThreadManager
                             config.ThreadType, config.ThreadId);
                         break;
                 }
+                
+                // Check cancellation after operation completes
+                cancellationToken.ThrowIfCancellationRequested();
 
                 // If the operation failed, stop the thread immediately
                 if (!operationSuccess)

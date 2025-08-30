@@ -113,23 +113,20 @@ builder.Services.AddSingleton<IComputeUnitManager, ComputeUnitManager>();
 builder.Services.AddSingleton<ISolanaClientService, SolanaClientService>();
 builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
 builder.Services.AddSingleton<IContractVersionService, RawRpcContractVersionService>(); // Raw RPC validation (depends on SolanaClientService)
-builder.Services.AddSingleton<IThreadManager, ThreadManager>();
+builder.Services.AddSingleton<IThreadManager>(sp => new ThreadManager(
+    sp.GetRequiredService<IStorageService>(),
+    sp.GetRequiredService<ISolanaClientService>(),
+    sp.GetRequiredService<ITransactionBuilderService>(),
+    sp.GetRequiredService<IContractErrorHandler>(),
+    sp.GetRequiredService<ISystemStateService>(),
+    sp.GetRequiredService<ILogger<ThreadManager>>()));
 builder.Services.AddSingleton<IEmptyCommandHandler, EmptyCommandHandler>();
 
 // Remove legacy IEventLogger adapter (fully migrated to ILogger<T>)
 
-// Register engine
-builder.Services.AddSingleton<IServiceLifecycle, StressTestEngine>(sp =>
-{
-    return new StressTestEngine(
-        sp.GetRequiredService<IThreadManager>(),
-        sp.GetRequiredService<ISolanaClientService>(),
-        sp.GetRequiredService<IContractVersionService>(),
-        sp.GetRequiredService<IStorageService>(),
-        sp.GetRequiredService<IComputeUnitManager>(),
-        sp.GetRequiredService<ILogger<StressTestEngine>>(),
-        sp.GetRequiredService<IConfiguration>());
-});
+// Register engine with new lifecycle management
+builder.Services.AddSingleton<IServiceLifecycle, ServiceLifecycleManager>();
+builder.Services.AddSingleton<ISystemStateService, SystemStateService>();
 
 // Add background services - orchestrated by the engine instead of the ASP.NET host
 // NOTE: Performance monitor remains as a host background service if desired

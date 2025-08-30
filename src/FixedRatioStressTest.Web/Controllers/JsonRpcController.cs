@@ -13,13 +13,15 @@ public class JsonRpcController : ControllerBase
     private readonly ISolanaClientService _solanaClient;
     private readonly IThreadManager _threadManager;
     private readonly IEmptyCommandHandler _emptyHandler;
+    private readonly ISystemStateService _systemState;
     private readonly ILogger<JsonRpcController> _logger;
 
-    public JsonRpcController(ISolanaClientService solanaClient, IThreadManager threadManager, IEmptyCommandHandler emptyHandler, ILogger<JsonRpcController> logger)
+    public JsonRpcController(ISolanaClientService solanaClient, IThreadManager threadManager, IEmptyCommandHandler emptyHandler, ISystemStateService systemState, ILogger<JsonRpcController> logger)
     {
         _solanaClient = solanaClient;
         _threadManager = threadManager;
         _emptyHandler = emptyHandler;
+        _systemState = systemState;
         _logger = logger;
     }
 
@@ -29,6 +31,29 @@ public class JsonRpcController : ControllerBase
         try
         {
             _logger.LogInformation("JSON-RPC request: {Method}", request.Method);
+            
+            // Check system state for all operations except read-only ones
+            if (!IsReadOnlyOperation(request.Method))
+            {
+                try
+                {
+                    _systemState.ValidateSystemState();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    _logger.LogWarning("RPC request {Method} rejected: {Reason}", request.Method, ex.Message);
+                    return Ok(new JsonRpcResponse<object>
+                    {
+                        Error = new JsonRpcError
+                        {
+                            Code = -32000, // Custom error code for system state
+                            Message = ex.Message
+                        },
+                        Id = request.Id
+                    });
+                }
+            }
+            
             return request.Method switch
             {
                 "create_pool" => await CreatePool(request),
@@ -753,6 +778,23 @@ public class JsonRpcController : ControllerBase
         {
         }
         return null;
+    }
+
+    /// <summary>
+    /// Determines if an RPC method is read-only and should be allowed even when the system is paused
+    /// </summary>
+    private static bool IsReadOnlyOperation(string method)
+    {
+        return method switch
+        {
+            "list_pools" => true,
+            "get_pool" => true,
+            "get_thread" => true,
+            "get_thread_stats" => true,
+            "list_threads" => true,
+            "core_wallet_status" => true,
+            _ => false
+        };
     }
 }
 

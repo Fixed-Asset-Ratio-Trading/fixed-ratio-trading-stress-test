@@ -25,6 +25,9 @@ public sealed class InProcessApiHost
 	private readonly ILoggerFactory _loggerFactory;
 	private readonly GuiLoggerProvider _guiLoggerProvider;
 	private readonly ISolanaClientService _solanaClientService;
+	private readonly ISystemStateService _systemStateService;
+	private readonly IThreadManager _threadManager;
+	private readonly IStorageService _storageService;
 
 	private WebApplication? _app;
 	private Task? _runTask;
@@ -34,12 +37,18 @@ public sealed class InProcessApiHost
 		IConfiguration configuration,
 		ILoggerFactory loggerFactory,
 		GuiLoggerProvider guiLoggerProvider,
-		ISolanaClientService solanaClientService)
+		ISolanaClientService solanaClientService,
+		ISystemStateService systemStateService,
+		IThreadManager threadManager,
+		IStorageService storageService)
 	{
 		_configuration = configuration;
 		_loggerFactory = loggerFactory;
 		_guiLoggerProvider = guiLoggerProvider;
 		_solanaClientService = solanaClientService;
+		_systemStateService = systemStateService;
+		_threadManager = threadManager;
+		_storageService = storageService;
 	}
 
 	public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -81,17 +90,13 @@ public sealed class InProcessApiHost
 
 		builder.Services.AddSingleton<ISolanaClientService>(_solanaClientService);
 		// Register required services for controllers that depend on threading and storage
-		builder.Services.AddSingleton<IStorageService, JsonFileStorageService>();
+		builder.Services.AddSingleton<IStorageService>(_ => _storageService); // Use shared instance from main container
 		builder.Services.AddSingleton<IComputeUnitManager, ComputeUnitManager>();
 		builder.Services.AddSingleton<IContractVersionService, RawRpcContractVersionService>();
 		builder.Services.AddSingleton<ITransactionBuilderService, TransactionBuilderService>();
 		builder.Services.AddSingleton<IContractErrorHandler, ContractErrorHandler>();
-		builder.Services.AddSingleton<IThreadManager>(sp => new ThreadManager(
-			sp.GetRequiredService<IStorageService>(),
-			sp.GetRequiredService<ISolanaClientService>(),
-			sp.GetRequiredService<ITransactionBuilderService>(),
-			sp.GetRequiredService<IContractErrorHandler>(),
-			sp.GetRequiredService<ILogger<ThreadManager>>()));
+		builder.Services.AddSingleton<ISystemStateService>(_ => _systemStateService); // Use shared instance from main container
+		builder.Services.AddSingleton<IThreadManager>(_ => _threadManager); // Use shared instance from main container
 		builder.Services.AddSingleton<IEmptyCommandHandler, EmptyCommandHandler>();
 		builder.Services.AddRouting();
 		builder.Services.AddControllers().AddApplicationPart(Assembly.Load("FixedRatioStressTest.Web"));

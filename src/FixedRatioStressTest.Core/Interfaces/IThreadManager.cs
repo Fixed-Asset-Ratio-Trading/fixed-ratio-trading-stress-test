@@ -12,5 +12,10 @@ public interface IThreadManager
     Task<ThreadConfig> GetThreadConfigAsync(string threadId);
     Task<List<ThreadConfig>> GetAllThreadsAsync();
     Task<ThreadStatistics> GetThreadStatisticsAsync(string threadId);
+    
+    /// <summary>
+    /// Forcefully stops ALL threads regardless of status and cleans up all resources
+    /// </summary>
+    Task ForceStopAllThreadsAsync();
 }
 

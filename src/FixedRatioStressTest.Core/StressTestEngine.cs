@@ -143,13 +143,9 @@ public sealed class StressTestEngine : IServiceLifecycle, IDisposable
             _logger.LogDebug("[Engine] StopAsync invoked");
             await ChangeStateAsync(ServiceState.Stopping, "Engine shutdown initiated");
 
-            // Stop all running stress threads gracefully.
-            var allThreads = await _threadManager.GetAllThreadsAsync();
-            _logger.LogDebug("[Engine] Stopping {0} running threads", allThreads.Count(t => t.Status == ThreadStatus.Running));
-            foreach (var t in allThreads.Where(t => t.Status == ThreadStatus.Running))
-            {
-                await _threadManager.StopThreadAsync(t.ThreadId);
-            }
+            // FORCE stop ALL threads regardless of status - complete shutdown
+            _logger.LogWarning("[Engine] FORCE STOPPING ALL THREADS - Complete system shutdown");
+            await _threadManager.ForceStopAllThreadsAsync();
 
             // Stop services in reverse order.
             foreach (var svc in Enumerable.Reverse(_startupServices))

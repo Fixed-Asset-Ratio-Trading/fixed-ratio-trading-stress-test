@@ -385,8 +385,13 @@ public sealed class GuiServiceHost : Form, IServiceHost
         try
         {
             _stopButton.Enabled = false;
+            
+            // CRITICAL: Stop API host FIRST to prevent any new RPC calls
             await _apiHost.StopAsync();
+            
+            // Then stop the core engine which will force stop all threads
             await _engine.StopAsync();
+            
             if (_exitAfterStop)
             {
                 Close();

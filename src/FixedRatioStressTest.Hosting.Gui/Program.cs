@@ -86,24 +86,24 @@ internal static class Program
 			sp.GetRequiredService<ISolanaClientService>(),
 			sp.GetRequiredService<ITransactionBuilderService>(),
 			sp.GetRequiredService<IContractErrorHandler>(),
+			sp.GetRequiredService<ISystemStateService>(),
 			sp.GetRequiredService<ILogger<FixedRatioStressTest.Core.Services.ThreadManager>>()));
 
-		// Service lifecycle engine
-		services.AddSingleton<IServiceLifecycle, StressTestEngine>(sp => new StressTestEngine(
-			sp.GetRequiredService<IThreadManager>(),
-			sp.GetRequiredService<ISolanaClientService>(),
-			sp.GetRequiredService<IContractVersionService>(),
-			sp.GetRequiredService<IStorageService>(),
-			sp.GetRequiredService<IComputeUnitManager>(),
-			sp.GetRequiredService<ILogger<StressTestEngine>>(),
-			sp.GetRequiredService<IConfiguration>()));
+		// Service lifecycle engine - now managed by lifecycle manager
+		services.AddSingleton<IServiceLifecycle, ServiceLifecycleManager>();
+		
+		// System state service for RPC validation
+		services.AddSingleton<ISystemStateService, SystemStateService>();
 
 		// In-process API host bound to GUI lifecycle
 		services.AddSingleton<InProcessApiHost>(sp => new InProcessApiHost(
 			sp.GetRequiredService<IConfiguration>(),
 			sp.GetRequiredService<ILoggerFactory>(),
 			sp.GetRequiredService<GuiLoggerProvider>(),
-			sp.GetRequiredService<ISolanaClientService>()));
+			sp.GetRequiredService<ISolanaClientService>(),
+			sp.GetRequiredService<ISystemStateService>(),
+			sp.GetRequiredService<IThreadManager>(),
+			sp.GetRequiredService<IStorageService>()));
 
 		// Parse CLI args
 		var autoStart = args.Any(a => string.Equals(a, "--start", StringComparison.OrdinalIgnoreCase));
